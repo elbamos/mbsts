@@ -90,7 +90,7 @@ parameters {
   // TREND delta_t
   matrix[1, N_series]                                 delta_t0; // Trend at time 0
   row_vector[N_series]                                alpha_trend; // long-term trend
-    // Hierarchical shrinkage prior on beta_trend
+  // Hierarchical shrinkage prior on beta_trend 
   vector<lower=0>[ar * N_series]                      lambda_m_beta_trend; 
   real<lower=0>                                       c_beta_trend;
   real<lower=0>                                       tau_beta_trend;
@@ -111,10 +111,10 @@ parameters {
   matrix[N_periods - 1, N_series]                     kappa_star; // Random changes in counter-cyclicality
   
   // REGRESSION
-  vector<lower=0>[N_features * N_series]       lambda_m_beta_xi; 
-  real<lower=0>                                c_beta_xi;
-  real<lower=0>                                tau_beta_xi;
-  matrix[N_features, N_series]                 beta_xi; // Coefficients of the regression parameters
+  vector<lower=0>[N_features * N_series]              lambda_m_beta_xi; 
+  real<lower=0>                                       c_beta_xi;
+  real<lower=0>                                       tau_beta_xi;
+  matrix[N_features, N_series]                        beta_xi; // Coefficients of the regression parameters
   
   // INNOVATIONS
   matrix[N_periods-1, N_series]                       epsilon; // Innovations
@@ -146,11 +146,10 @@ transformed parameters {
   matrix[N_series, N_series]                          L_Omega_trend = make_L(theta_trend, L_omega_trend);
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
-  // Hierarchical shrinkage
-  matrix[ar, N_series] beta_trend_hs = apply_hs_prior(beta_trend, m0, N, sigma_y, 1, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
-  matrix[ar, N_series] beta_p_hs = apply_hs_prior(beta_p, m0, N, sigma_y, 1, tau_beta_p, lambda_m_beta_p, c_beta_p); 
-  matrix[ar, N_series] beta_q_hs = apply_hs_prior(beta_q, m0, N, sigma_y, 1, tau_beta_q, lambda_m_beta_q, c_beta_q);     
-  
+  matrix[ar, N_series] beta_trend_hs = apply_hs_prior(beta_trend, m0, N_periods, sigma_y, 1, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
+  matrix[ar, N_series] beta_p_hs = apply_hs_prior(beta_p, m0, N_periods, sigma_y, 1, tau_beta_p, lambda_m_beta_p, c_beta_p); 
+  matrix[ar, N_series] beta_q_hs = apply_hs_prior(beta_q, m0, N_periods, sigma_y, 1, tau_beta_q, lambda_m_beta_q, c_beta_q); 
+
   // TREND
   delta[1] = make_delta_t(alpha_trend, block(beta_trend_hs, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
   for (t in 2:(N_periods-1)) {

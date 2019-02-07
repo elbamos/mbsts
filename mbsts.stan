@@ -30,7 +30,7 @@ functions {
     param ~ normal(0, 1);
   }
 
-  matrix apply_hs_prior(matrix param_raw, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
+  matrix apply_hs_prior_m(matrix param_raw, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
     int M = num_elements(param_raw);
     real m0 =  M * target_sparsity;
     real tau0 = (m0 / (M - m0)) * (sigma / sqrt(1.0 * N));
@@ -38,6 +38,16 @@ functions {
     real c2 = c2_tilde * slab_scale;
     lambda_m_tilde = sqrt(c2 * square(lambda_m) ./ (c2 + square(tau * tau0) * square(lambda_m)));
     return tau * tau0 * to_matrix(lambda_m_tilde, rows(param_raw), cols(param_raw)) .* param_raw;
+  }
+  
+  vector apply_hs_prior_v(vector param_raw, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
+    int M = num_elements(param_raw);
+    real m0 =  M * target_sparsity;
+    real tau0 = (m0 / (M - m0)) * (sigma / sqrt(1.0 * N));
+    vector[M] lambda_m_tilde;
+    real c2 = c2_tilde * slab_scale;
+    lambda_m_tilde = sqrt(c2 * square(lambda_m) ./ (c2 + square(tau * tau0) * square(lambda_m)));
+    return tau * tau0 * lambda_m_tilde .* param_raw;
   }
 }
 
@@ -151,10 +161,10 @@ transformed parameters {
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
   // Hierarchical shrinkage
-  matrix[ar, N_series] beta_trend_hs = apply_hs_prior(beta_trend, m0, N_periods, sigma_y, slab_scale_trend, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
-  matrix[ar, N_series] beta_p_hs = apply_hs_prior(beta_p, m0, N_periods, sigma_y, slab_scale_p, tau_beta_p, lambda_m_beta_p, c_beta_p); 
-  matrix[ar, N_series] beta_q_hs = apply_hs_prior(beta_q, m0, N_periods, sigma_y, slab_scale_q, tau_beta_q, lambda_m_beta_q, c_beta_q); 
-  matrix[N_features, N_series] beta_xi_hs = apply_hs_prior(beta_xi, m0, N_periods, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
+  matrix[ar, N_series] beta_trend_hs = apply_hs_prior_m(beta_trend, m0, N_periods, sigma_y, slab_scale_trend, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
+  matrix[ar, N_series] beta_p_hs = apply_hs_prior_m(beta_p, m0, N_periods, sigma_y, slab_scale_p, tau_beta_p, lambda_m_beta_p, c_beta_p); 
+  matrix[ar, N_series] beta_q_hs = apply_hs_prior_m(beta_q, m0, N_periods, sigma_y, slab_scale_q, tau_beta_q, lambda_m_beta_q, c_beta_q); 
+  matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, m0, N_periods, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
   // Retain calculation of xi
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; // Predictors
   
@@ -254,6 +264,7 @@ model {
   // ----- TIME SERIES ------
   to_vector(starting_prices) ~ uniform(min_price, max_price); 
   nu_trend ~ multi_normal_cholesky(zero_vector, L_Omega_trend);
+
   for (t in 1:(N_periods-1)) {
     w_t[t] ~ normal(zero_vector, theta_season);
     kappa[t] ~ normal(zero_vector, theta_cycle);

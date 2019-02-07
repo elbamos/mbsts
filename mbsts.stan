@@ -3,16 +3,19 @@ Potential issues:
 ---- Hierarchical shrinkage ----
 - How do we choose the slab_scale? currently using 1
 - Which volatility to use in calculating tau0? currently using sigma_price
-- For generating the parameters, the original code used a constant sigma to draw the params, then multiplied them by the shrinkage prior; this code samples against the shrinkage prior directly. The former may have better geometry
 
 ---- Cyclicality ---- 
 I'm not 100 % confident that I'm correctly interpreting the formula
 
 ---- Other ---- 
 - Do we want shrinkage priors on the trend, seasonality, or price shocks themselves?
-- Prior on seasonality?
+  - Perhaps the shrinkage prior could be used for theta on seasonality; the theory being, if a price series isn't seasonal, the parameter will shrink toward zero.
+- Prior on seasonality? 
 - Prior on lambda for cyclicality? 
 - Prior on the damping factor for cyclicality?
+
+--- CHANGES ---
+- Gave in and zero-centered the draws of the pre-shrunk params
 */
 
 functions {
@@ -27,22 +30,22 @@ functions {
   }
   
   // Sparsity
-  void apply_hs_prior_lp(vector param, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde, real nu) {
-    int M = num_elements(param);
-    real m0 =  M * target_sparsity;
-    real tau0 = (m0 / (M - m0)) * (sigma / sqrt(1.0 * N));
-    vector[M] lambda_m_tilde;
-    real c2; 
-    
+  void hs_prior_lp(vector param, real tau, vector lambda_m, real c2_tilde, real nu) {
     tau ~ cauchy(0, 1);
     c2_tilde ~ inv_gamma(nu/2, nu / 2);
     lambda_m ~ cauchy(0, 1);
-    c2 = c2_tilde * slab_scale;
-    lambda_m_tilde = sqrt(c2 * square(lambda_m) ./ (c2 + square(tau * tau0) * square(lambda_m)));
-    
-    param ~ normal(0, tau * tau0 * lambda_m_tilde);
+    param ~ normal(0, 1);
   }
 
+  matrix apply_hs_prior(matrix param_raw, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
+    int M = num_elements(param_raw);
+    real m0 =  M * target_sparsity;
+    real tau0 = (m0 / (M - m0)) * (sigma / sqrt(1.0 * N));
+    vector[M] lambda_m_tilde;
+    real c2 = c2_tilde * slab_scale;
+    lambda_m_tilde = sqrt(c2 * square(lambda_m) ./ (c2 + square(tau * tau0) * square(lambda_m)));
+    return tau * tau0 * to_matrix(lambda_m_tilde, rows(param_raw), cols(param_raw)) .* param_raw;
+  }
 }
 
 data { 
@@ -147,15 +150,22 @@ transformed parameters {
   vector[N]                                 log_y_hat; 
   matrix[D, D]                              L_Omega_trend = make_L(theta_trend, L_omega_trend);
   
+  // TODO: Is sigma_y the correct volatility to use here?
+  // TODO: How do we determine the slab scale? 
+  matrix[ar, D] beta_trend_hs = apply_hs_prior(beta_trend, m0, N, sigma_y, 1, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
+  matrix[ar, D] beta_p_hs = apply_hs_prior(beta_p, m0, N, sigma_y, 1, tau_beta_p, lambda_m_beta_p, c_beta_p); 
+  matrix[ar, D] beta_q_hs = apply_hs_prior(beta_q, m0, N, sigma_y, 1, tau_beta_q, lambda_m_beta_q, c_beta_q); 
+  
   // TREND
-  delta[1] = make_delta_t(alpha_trend, block(beta_trend, ar, 1, 1, D), delta_t0, nu_trend[1]);
+  delta[1] = make_delta_t(alpha_trend, block(beta_trend_hs, ar, 1, 1, D), delta_t0, nu_trend[1]);
   for (t in 2:(P-1)) {
     if (t <= ar) {
-      delta[t] = make_delta_t(alpha_trend, block(beta_trend, ar - t + 2, 1, t - 1, D), block(delta, 1, 1, t - 1, D), nu_trend[t]);
+      delta[t] = make_delta_t(alpha_trend, block(beta_trend_hs, ar - t + 2, 1, t - 1, D), block(delta, 1, 1, t - 1, D), nu_trend[t]);
     } else {
-      delta[t] = make_delta_t(alpha_trend, beta_trend, block(delta, t - ar, 1, ar, D), nu_trend[t]);
+      delta[t] = make_delta_t(alpha_trend, beta_trend_hs, block(delta, t - ar, 1, ar, D), nu_trend[t]);
     }
   }
+
   
   // SEASONALITY
   tau[1] = -w_t[1];
@@ -190,15 +200,15 @@ transformed parameters {
       row_vector[D]  q_component; 
       
       if (t <= p) {
-        p_component = columns_dot_product(block(beta_p, p - t + 2, 1, t - 1, D), block(theta, 1, 1, t - 1, D));
+        p_component = columns_dot_product(block(beta_p_hs, p - t + 2, 1, t - 1, D), block(theta, 1, 1, t - 1, D));
       } else {
-        p_component = columns_dot_product(beta_p, block(theta, t - p, 1, p, D));
+        p_component = columns_dot_product(beta_p_hs, block(theta, t - p, 1, p, D));
       }
       
       if (t <= q) {
-        q_component = columns_dot_product(block(beta_q, q - t + 2, 1, t - 1, D), block(epsilon_squared, 1, 1, t - 1, D));
+        q_component = columns_dot_product(block(beta_q_hs, q - t + 2, 1, t - 1, D), block(epsilon_squared, 1, 1, t - 1, D));
       } else {
-        q_component = columns_dot_product(beta_q, block(epsilon_squared, t - q, 1, q, D));
+        q_component = columns_dot_product(beta_q_hs, block(epsilon_squared, t - q, 1, q, D));
       }
       
       theta[t] = omega_garch + p_component + q_component;
@@ -227,7 +237,7 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, 1); 
   to_vector(alpha_trend) ~ normal(0, 1); 
-  apply_hs_prior_lp(to_vector(beta_trend), m0, N, sigma_y, 1, tau_beta_trend, lambda_m_beta_trend, c_beta_trend, nu);
+  hs_prior_lp(to_vector(beta_trend), tau_beta_trend, lambda_m_beta_trend, c_beta_trend, nu);
   to_vector(theta_trend) ~ cauchy(0, 1); 
   L_omega_trend ~ lkj_corr_cholesky(1);
   
@@ -240,14 +250,12 @@ model {
   theta_cycle ~ cauchy(0, 1);
   
   // REGRESSION
-  // TODO: Is sigma_y the correct volatility to use here?
-  // TODO: How do we determine the slab scale? 
-  apply_hs_prior_lp(to_vector(beta_xi), m0, N, sigma_y, 1, tau_beta_xi, lambda_m_beta_xi, c_beta_xi, nu);
+  hs_prior_lp(to_vector(beta_xi), tau_beta_xi, lambda_m_beta_xi, c_beta_xi, nu);
 
   // INNOVATIONS
   omega_garch ~ cauchy(0, 1);
-  apply_hs_prior_lp(to_vector(beta_p), m0, N, sigma_y, 1, tau_beta_p, lambda_m_beta_p, c_beta_p, nu);
-  apply_hs_prior_lp(to_vector(beta_q), m0, N, sigma_y, 1, tau_beta_q, lambda_m_beta_q, c_beta_q, nu);
+  hs_prior_lp(to_vector(beta_p), tau_beta_p, lambda_m_beta_p, c_beta_p, nu);
+  hs_prior_lp(to_vector(beta_q), tau_beta_q, lambda_m_beta_q, c_beta_q, nu);
   L_omega_garch ~ lkj_corr_cholesky(1);
 
   // Time series
@@ -278,12 +286,12 @@ generated quantities {
   for (t in 1:periods_to_predict) {
     row_vector[D] nu_hat = to_row_vector(multi_normal_cholesky_rng(to_vector(zero_vector), L_Omega_trend));
     if (t == 1) {
-      delta_hat[t] = make_delta_t(alpha_trend, beta_trend, block(delta, P - ar, 1, ar, D), nu_hat);
+      delta_hat[t] = make_delta_t(alpha_trend, beta_trend_hs, block(delta, P - ar, 1, ar, D), nu_hat);
     } else if (t <= ar) {
-      delta_hat[t] = make_delta_t(alpha_trend, beta_trend, append_row(block(delta, P - ar + t, 1, ar - t - 1, D), 
+      delta_hat[t] = make_delta_t(alpha_trend, beta_trend_hs, append_row(block(delta, P - ar + t, 1, ar - t - 1, D), 
                                                                       block(delta_hat, 1, 1, t-1, D)), nu_hat);
     } else {
-      delta_hat[t] = make_delta_t(alpha_trend, beta_trend, block(delta_hat, periods_to_predict - ar, 1, ar, D), nu_hat);
+      delta_hat[t] = make_delta_t(alpha_trend, beta_trend_hs, block(delta_hat, periods_to_predict - ar, 1, ar, D), nu_hat);
     }
   }
   
@@ -325,21 +333,21 @@ generated quantities {
     row_vector[D]  q_component; 
     
     if (t <= p) {
-      p_component = columns_dot_product(beta_p, append_row(
+      p_component = columns_dot_product(beta_p_hs, append_row(
         block(theta, P - p + t, 1, p - t + 1, D),
         block(theta_hat, 1, 1, t - 1, D)
       ));
     } else {
-      p_component = columns_dot_product(beta_p, block(theta_hat, t - p, 1, p, D));
+      p_component = columns_dot_product(beta_p_hs, block(theta_hat, t - p, 1, p, D));
     }
     
     if (t <= q) {
-      q_component = columns_dot_product(beta_q, append_row(
+      q_component = columns_dot_product(beta_q_hs, append_row(
         square(block(epsilon, P - q + t, 1, q - t + 1, D)),
         block(epsilon_squared_hat, 1, 1, t - 1, D)
       )); 
     } else {
-      q_component = columns_dot_product(beta_q, block(epsilon_squared_hat, t - q, 1, q, D));
+      q_component = columns_dot_product(beta_q_hs, block(epsilon_squared_hat, t - q, 1, q, D));
     }
     
     theta_hat[t] = omega_garch + p_component + q_component;

@@ -58,6 +58,9 @@ data {
   // Parameeters controlling sparse feature selection
   real<lower=0,upper=1>              m0; // Sparsity target; proportion of features we expect to be relevant
   int<lower=1>                       nu; // nu parameters for horseshoe prior
+  real<lower=0>                      slab_scale_trend;
+  real<lower=0>                      slab_scale_p;
+  real<lower=0>                      slab_scale_q;
   
   // Data 
   vector<lower=0>[N]                         y;
@@ -144,11 +147,13 @@ transformed parameters {
   matrix[N_periods, N_series]                         xi = x * beta_xi; // Predictors
   vector[N]                                           log_y_hat; 
   matrix[N_series, N_series]                          L_Omega_trend = make_L(theta_trend, L_omega_trend);
+  // Helpers for calculating cyclicality
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
-  matrix[ar, N_series] beta_trend_hs = apply_hs_prior(beta_trend, m0, N_periods, sigma_y, 1, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
-  matrix[ar, N_series] beta_p_hs = apply_hs_prior(beta_p, m0, N_periods, sigma_y, 1, tau_beta_p, lambda_m_beta_p, c_beta_p); 
-  matrix[ar, N_series] beta_q_hs = apply_hs_prior(beta_q, m0, N_periods, sigma_y, 1, tau_beta_q, lambda_m_beta_q, c_beta_q); 
+  // Hierarchical shrinkage
+  matrix[ar, N_series] beta_trend_hs = apply_hs_prior(beta_trend, m0, N_periods, sigma_y, slab_scale_trend, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
+  matrix[ar, N_series] beta_p_hs = apply_hs_prior(beta_p, m0, N_periods, sigma_y, slab_scale_p, tau_beta_p, lambda_m_beta_p, c_beta_p); 
+  matrix[ar, N_series] beta_q_hs = apply_hs_prior(beta_q, m0, N_periods, sigma_y, slab_scale_q, tau_beta_q, lambda_m_beta_q, c_beta_q); 
 
   // TREND
   delta[1] = make_delta_t(alpha_trend, block(beta_trend_hs, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
@@ -245,7 +250,6 @@ model {
   L_omega_garch ~ lkj_corr_cholesky(1);
 
   // ----- TIME SERIES ------
-  // Time series
   to_vector(starting_prices) ~ uniform(min_price, max_price); 
   nu_trend ~ multi_normal_cholesky(zero_vector, L_Omega_trend);
   for (t in 1:(N_periods-1)) {

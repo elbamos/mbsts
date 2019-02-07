@@ -167,8 +167,34 @@ transformed parameters {
 
 model {
   vector[N] price_error = log_y - log_y_hat;
+  
+  // ----- PRIORS ------
+  // TREND 
+  to_vector(delta_t0) ~ normal(0, 1); 
+  to_vector(alpha_trend) ~ normal(0, 1); 
+  to_vector(beta_trend) ~ normal(0, 1); 
+  to_vector(theta_trend) ~ cauchy(0, 1); 
+  L_omega_trend ~ lkj_corr_cholesky(1);
+  
+  // SEASONALITY
+  theta_season ~ cauchy(0, 1); 
+
+  // CYCLICALITY
+  lambda ~ uniform(0, pi());
+  rho ~ uniform(0, 1);
+  theta_cycle ~ cauchy(0, 1);
+  
+  // REGRESSION
+  to_vector(beta_xi) ~ normal(0, 1); 
+
+  // INNOVATIONS
+  omega_garch ~ cauchy(0, 1);
+  to_vector(beta_p) ~ normal(0, 1);
+  to_vector(beta_q) ~ normal(0, 1); 
+  L_omega_garch ~ lkj_corr_cholesky(1);
 
   // Time series
+  to_vector(starting_prices) ~ gamma(2, 0); 
   nu_trend ~ multi_normal_cholesky(zero_vector, L_Omega_trend);
   for (t in 1:(P-1)) {
     w_t[t] ~ normal(zero_vector, theta_season);

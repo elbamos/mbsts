@@ -7,13 +7,6 @@ Potential issues:
 ---- Cyclicality ---- 
 I'm not 100 % confident that I'm correctly interpreting the formula
 
----- Other ---- 
-- Do we want shrinkage priors on the trend, seasonality, or price shocks themselves?
-  - Perhaps the shrinkage prior could be used for theta on seasonality; the theory being, if a price series isn't seasonal, the parameter will shrink toward zero.
-- Prior on seasonality? 
-- Prior on lambda for cyclicality? 
-- Prior on the damping factor for cyclicality?
-
 --- CHANGES ---
 - Gave in and zero-centered the draws of the pre-shrunk params
 */
@@ -131,7 +124,7 @@ parameters {
   real<lower=0>                                       c_beta_p;
   real<lower=0>                                       tau_beta_p;
   matrix<lower=0>[p, N_series]                        beta_p; // Univariate GARCH coefficients on prior volatility
-    // Hierarchical shrinkage prior on beta_q
+  // Hierarchical shrinkage prior on beta_q
   vector<lower=0>[q * N_series]                       lambda_m_beta_q; 
   real<lower=0>                                       c_beta_q;
   real<lower=0>                                       tau_beta_q;

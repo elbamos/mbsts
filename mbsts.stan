@@ -1,3 +1,20 @@
+/*
+Potential issues:
+---- Hierarchical shrinkage ----
+- How do we choose the slab_scale? currently using 1
+- Which volatility to use in calculating tau0? currently using sigma_price
+- For generating the parameters, the original code used a constant sigma to draw the params, then multiplied them by the shrinkage prior; this code samples against the shrinkage prior directly. The former may have better geometry
+
+---- Cyclicality ---- 
+I'm not 100 % confident that I'm correctly interpreting the formula
+
+---- Other ---- 
+- Do we want shrinkage priors on the trend, seasonality, or price shocks themselves?
+- Prior on seasonality?
+- Prior on lambda for cyclicality? 
+- Prior on the damping factor for cyclicality?
+*/
+
 functions {
   
   matrix make_L(row_vector theta, matrix Omega) {
@@ -8,6 +25,23 @@ functions {
   row_vector make_delta_t(row_vector alpha_trend, matrix beta_trend, matrix delta_past, row_vector nu) {
       return alpha_trend + columns_dot_product(beta_trend, delta_past - rep_matrix(alpha_trend, rows(delta_past))) + nu;
   }
+  
+  // Sparsity
+  void apply_hs_prior_lp(vector param, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde, real nu) {
+    int M = num_elements(param);
+    real m0 =  M * target_sparsity;
+    real tau0 = (m0 / (M - m0)) * (sigma / sqrt(1.0 * N));
+    vector[M] lambda_m_tilde;
+    real c2; 
+    
+    tau ~ cauchy(0, 1);
+    c2_tilde ~ inv_gamma(nu/2, nu / 2);
+    lambda_m ~ cauchy(0, 1);
+    c2 = c2_tilde * slab_scale;
+    lambda_m_tilde = sqrt(c2 * square(lambda_m) ./ (c2 + square(tau * tau0) * square(lambda_m)));
+    
+    param ~ normal(0, tau * tau0 * lambda_m_tilde);
+  }
 
 }
 
@@ -17,13 +51,17 @@ data {
   int<lower=2> N_periods; // Number of periods
   int<lower=1> N_features; // Number of features in the regression
   
-  // Parameters controlling the model 
+  // Parameters controlling the time series 
   int<lower=2> periods_to_predict;
   int<lower=1> ar; // AR period for the trend
   int<lower=1> p; // GARCH
   int<lower=1> q; // GARCH
   int<lower=1> s[N_series]; // seasonality periods
   real<lower=1> period_scale; 
+  
+  // Parameeters controlling sparse feature selection
+  real<lower=0,upper=1>              m0; // Sparsity target; proportion of features we expect to be relevant
+  int<lower=1>                       nu; // nu parameters for horseshoe prior
   
   // Data 
   vector<lower=0>[N]                         y;
@@ -56,6 +94,10 @@ parameters {
   // TREND delta_t
   matrix[1, N_series]                                 delta_t0; // Trend at time 0
   row_vector[N_series]                                alpha_trend; // long-term trend
+    // Hierarchical shrinkage prior on beta_trend
+  vector<lower=0>[ar * N_series]                      lambda_m_beta_trend; 
+  real<lower=0>                                       c_beta_trend;
+  real<lower=0>                                       tau_beta_trend;
   matrix<lower=0,upper=1>[ar, N_series]               beta_trend; // Learning rate of trend
   row_vector[N_series]                                nu_trend[N_periods-1]; // Random changes in trend
   row_vector<lower=0>[N_series]                       theta_trend; // Variance in changes in trend
@@ -73,12 +115,24 @@ parameters {
   matrix[N_periods - 1, N_series]                     kappa_star; // Random changes in counter-cyclicality
   
   // REGRESSION
-  matrix[N_features, N_series]                        beta_xi; // Coefficients of the regression parameters
+<<<<<<< HEAD
+  vector<lower=0>[N_features * N_series]       lambda_m_beta_xi; 
+  real<lower=0>                                c_beta_xi;
+  real<lower=0>                                tau_beta_xi;
+  matrix[N_features, N_series]                 beta_xi; // Coefficients of the regression parameters
   
   // INNOVATIONS
   matrix[N_periods-1, N_series]                       epsilon; // Innovations
   row_vector<lower=0>[N_series]                       omega_garch; // Baseline volatility of innovations
+    // Hierarchical shrinkage prior on beta_p
+  vector<lower=0>[p * N_series]                       lambda_m_beta_p; 
+  real<lower=0>                                       c_beta_p;
+  real<lower=0>                                       tau_beta_p;
   matrix<lower=0>[p, N_series]                        beta_p; // Univariate GARCH coefficients on prior volatility
+    // Hierarchical shrinkage prior on beta_q
+  vector<lower=0>[q * N_series]                       lambda_m_beta_q; 
+  real<lower=0>                                       c_beta_q;
+  real<lower=0>                                       tau_beta_q;
   matrix<lower=0>[q, N_series]                        beta_q; // Univariate GARCH coefficients on prior innovations
   cholesky_factor_corr[N_series]                      L_omega_garch; // Constant correlations among innovations 
   
@@ -171,7 +225,7 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_trend) ~ normal(0, inv_period_scale); 
-  to_vector(beta_trend) ~ normal(0, 1); 
+  apply_hs_prior_lp(to_vector(beta_trend), m0, N, sigma_y, 1, tau_beta_trend, lambda_m_beta_trend, c_beta_trend, nu);
   to_vector(theta_trend) ~ cauchy(0, inv_period_scale); 
   L_omega_trend ~ lkj_corr_cholesky(1);
 
@@ -184,12 +238,12 @@ model {
   theta_cycle ~ cauchy(0, inv_period_scale);
 
   // REGRESSION
-  to_vector(beta_xi) ~ normal(0, inv_period_scale); 
+  apply_hs_prior_lp(to_vector(beta_xi), m0, N, sigma_y, 1, tau_beta_xi, lambda_m_beta_xi, c_beta_xi, nu);
 
   // INNOVATIONS
   omega_garch ~ cauchy(0, inv_period_scale);
-  to_vector(beta_p) ~ normal(0, 1);
-  to_vector(beta_q) ~ normal(0, 1); 
+  apply_hs_prior_lp(to_vector(beta_p), m0, N, sigma_y, 1, tau_beta_p, lambda_m_beta_p, c_beta_p, nu);
+  apply_hs_prior_lp(to_vector(beta_q), m0, N, sigma_y, 1, tau_beta_q, lambda_m_beta_q, c_beta_q, nu);
   L_omega_garch ~ lkj_corr_cholesky(1);
 
   // ----- TIME SERIES ------
@@ -202,7 +256,6 @@ model {
     kappa_star[t] ~ normal(zero_vector, theta_cycle);
     epsilon[t] ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
   }
-
 
   // ----- OBSERVATIONS ------
   sigma_y ~ cauchy(0, 0.01);

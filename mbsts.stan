@@ -92,7 +92,7 @@ transformed parameters {
   vector[N]                                 log_y_hat; 
   matrix[D, D]                              L_Omega_trend = make_L(theta_trend, L_omega_trend);
   
-  // TREND
+  // ----- TREND ------
   delta[1] = make_delta_t(alpha_trend, block(beta_trend, ar, 1, 1, D), delta_t0, nu_trend[1]);
   for (t in 2:(P-1)) {
     if (t <= ar) {
@@ -102,7 +102,7 @@ transformed parameters {
     }
   }
   
-  // SEASONALITY
+  // ----- SEASONALITY ------
   tau[1] = -w_t[1];
   for (t in 2:(P-1)) {
     for (d in 1:D) {
@@ -111,7 +111,7 @@ transformed parameters {
     tau[t] += w_t[t];
   }
   
-  // Cyclicality
+  // ----- CYCLICALITY ------
   omega[1] = kappa[1];
   omega_star[1] = kappa_star[1]; 
   {
@@ -125,7 +125,7 @@ transformed parameters {
   }
 
   
-  // Univariate GARCH
+  // ----- UNIVARIATE GARCH ------
   theta[1] = omega_garch; 
   {
     matrix[P-1, D] epsilon_squared = square(epsilon);
@@ -151,7 +151,7 @@ transformed parameters {
   }
  
   
-  
+  // ----- ASSEMBLE TIME SERIES ------
   {
     matrix[P, D] xi = beta_xi * x;
     
@@ -193,6 +193,7 @@ model {
   to_vector(beta_q) ~ normal(0, 1); 
   L_omega_garch ~ lkj_corr_cholesky(1);
 
+  // ----- TIME SERIES ------
   // Time series
   to_vector(starting_prices) ~ gamma(2, 0); 
   nu_trend ~ multi_normal_cholesky(zero_vector, L_Omega_trend);
@@ -203,7 +204,8 @@ model {
     epsilon[t] ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
   }
 
-  // Observations
+
+  // ----- OBSERVATIONS ------
   sigma_y ~ cauchy(0, 0.01);
   price_error ~ normal(0, inv(quantity) * sigma_y);
 }

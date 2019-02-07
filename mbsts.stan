@@ -1,3 +1,20 @@
+/*
+Potential issues:
+---- Hierarchical shrinkage ----
+- How do we choose the slab_scale? currently using 1
+- Which volatility to use in calculating tau0? currently using sigma_price
+- For generating the parameters, the original code used a constant sigma to draw the params, then multiplied them by the shrinkage prior; this code samples against the shrinkage prior directly. The former may have better geometry
+
+---- Cyclicality ---- 
+I'm not 100 % confident that I'm correctly interpreting the formula
+
+---- Other ---- 
+- Do we want shrinkage priors on the trend, seasonality, or price shocks themselves?
+- Prior on seasonality?
+- Prior on lambda for cyclicality? 
+- Prior on the damping factor for cyclicality?
+*/
+
 functions {
   
   matrix make_L(row_vector theta, matrix Omega) {
@@ -8,6 +25,23 @@ functions {
   row_vector make_delta_t(row_vector alpha_trend, matrix beta_trend, matrix delta_past, row_vector nu) {
       return alpha_trend + columns_dot_product(beta_trend, delta_past - rep_matrix(alpha_trend, rows(delta_past))) + nu;
   }
+  
+  // Sparsity
+  void apply_hs_prior_lp(vector param, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde, real nu) {
+    int M = num_elements(param);
+    real m0 =  M * target_sparsity;
+    real tau0 = (m0 / (M - m0)) * (sigma / sqrt(1.0 * N));
+    vector[M] lambda_m_tilde;
+    real c2; 
+    
+    tau ~ cauchy(0, 1);
+    c2_tilde ~ inv_gamma(nu/2, nu / 2);
+    lambda_m ~ cauchy(0, 1);
+    c2 = c2_tilde * slab_scale;
+    lambda_m_tilde = sqrt(c2 * square(lambda_m) ./ (c2 + square(tau * tau0) * square(lambda_m)));
+    
+    param ~ normal(0, tau * tau0 * lambda_m_tilde);
+  }
 
 }
 
@@ -17,13 +51,16 @@ data {
   int<lower=2> P; // Number of periods
   int<lower=1> F; // Number of features in the regression
   
-  // Parameters controlling the model 
+  // Parameters controlling the time series 
   int<lower=2> periods_to_predict;
   int<lower=1> ar; // AR period for the trend
   int<lower=1> p; // GARCH
   int<lower=1> q; // GARCH
-  int<lower=1> nu; // nu parameters for horseshoe prior
   int<lower=1> s[D]; // seasonality periods
+  
+  // Parameeters controlling sparse feature selection
+  real<lower=0,upper=1>              m0; // Sparsity target; proportion of features we expect to be relevant
+  int<lower=1>                       nu; // nu parameters for horseshoe prior
   
   // Data 
   vector<lower=0>[N]                  y;
@@ -40,9 +77,12 @@ transformed data {
   real<lower=0>                       min_price =  log1p(min(y));
   real<lower=0>                       max_price = log1p(max(y));
   row_vector[D]                       zero_vector = rep_row_vector(0, D);
+  //vector[D]                           counts = rep_row_vector(0, D); 
 
   for (n in 1:N) {
     log_y[n] = log1p(y[n]);
+    //counts[series[n]] += 1; // We keep track of counts to correctly calculate tau_0
+    // for the hierarchical shrinkage prior
   }
 }
 
@@ -53,6 +93,10 @@ parameters {
   // TREND delta_t
   matrix[1, D]                                 delta_t0; // Trend at time 0
   row_vector[D]                                alpha_trend; // long-term trend
+  // Hierarchical shrinkage prior on beta_trend
+  vector<lower=0>[ar * D]                      lambda_m_beta_trend; 
+  real<lower=0>                                c_beta_trend;
+  real<lower=0>                                tau_beta_trend;
   matrix<lower=0,upper=1>[ar, D]               beta_trend; // Learning rate of trend
   row_vector[D]                                nu_trend[P-1]; // Random changes in trend
   row_vector<lower=0>[D]                       theta_trend; // Variance in changes in trend
@@ -70,12 +114,23 @@ parameters {
   matrix[P - 1, D]                             kappa_star; // Random changes in counter-cyclicality
   
   // REGRESSION
+  vector<lower=0>[F * D]                       lambda_m_beta_xi; 
+  real<lower=0>                                c_beta_xi;
+  real<lower=0>                                tau_beta_xi;
   matrix[F, D]                                 beta_xi; // Coefficients of the regression parameters
   
   // INNOVATIONS
   matrix[P-1, D]                               epsilon; // Innovations
   row_vector[D]                                omega_garch; // Baseline volatility of innovations
+    // Hierarchical shrinkage prior on beta_p
+  vector<lower=0>[p * D]                       lambda_m_beta_p; 
+  real<lower=0>                                c_beta_p;
+  real<lower=0>                                tau_beta_p;
   matrix[p, D]                                 beta_p; // Univariate GARCH coefficients on prior volatility
+  // Hierarchical shrinkage prior on beta_q
+  vector<lower=0>[q * D]                       lambda_m_beta_q; 
+  real<lower=0>                                c_beta_q;
+  real<lower=0>                                tau_beta_q;
   matrix[q, D]                                 beta_q; // Univariate GARCH coefficients on prior innovations
   cholesky_factor_corr[D]                      L_omega_garch; // Constant correlations among innovations 
   
@@ -172,7 +227,7 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, 1); 
   to_vector(alpha_trend) ~ normal(0, 1); 
-  to_vector(beta_trend) ~ normal(0, 1); 
+  apply_hs_prior_lp(to_vector(beta_trend), m0, N, sigma_y, 1, tau_beta_trend, lambda_m_beta_trend, c_beta_trend, nu);
   to_vector(theta_trend) ~ cauchy(0, 1); 
   L_omega_trend ~ lkj_corr_cholesky(1);
   
@@ -185,12 +240,14 @@ model {
   theta_cycle ~ cauchy(0, 1);
   
   // REGRESSION
-  to_vector(beta_xi) ~ normal(0, 1); 
+  // TODO: Is sigma_y the correct volatility to use here?
+  // TODO: How do we determine the slab scale? 
+  apply_hs_prior_lp(to_vector(beta_xi), m0, N, sigma_y, 1, tau_beta_xi, lambda_m_beta_xi, c_beta_xi, nu);
 
   // INNOVATIONS
   omega_garch ~ cauchy(0, 1);
-  to_vector(beta_p) ~ normal(0, 1);
-  to_vector(beta_q) ~ normal(0, 1); 
+  apply_hs_prior_lp(to_vector(beta_p), m0, N, sigma_y, 1, tau_beta_p, lambda_m_beta_p, c_beta_p, nu);
+  apply_hs_prior_lp(to_vector(beta_q), m0, N, sigma_y, 1, tau_beta_q, lambda_m_beta_q, c_beta_q, nu);
   L_omega_garch ~ lkj_corr_cholesky(1);
 
   // Time series

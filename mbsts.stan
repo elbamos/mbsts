@@ -162,7 +162,6 @@ transformed parameters {
   // PREDICTORS
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; 
   
-  
   // TREND
   delta[1] = make_delta_t(alpha_trend, block(beta_trend_hs, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
   for (t in 2:(N_periods-1)) {

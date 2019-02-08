@@ -1,0 +1,250 @@
+---
+title: "Generate Data and Test"
+author: "Amos B. Elberg"
+date: "2/7/2019"
+output: html_document
+params:
+  N: 1000
+  S: 3
+  P: 50
+  F: 5
+  periods_to_predict: 15
+  p: 2
+  q: 2
+  ar: 2
+  s: 4
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(rethinking)
+library(bayesplot)
+library(tidybayes)
+library(rstan)
+library(ggplot2)
+library(forcats)
+library(purrr)
+library(rethinking)
+library(MASS)
+library(tidyr)
+```
+
+## Generate Price Series
+
+```{r seed}
+set.seed(1974)
+```
+
+```{r generate_price_series}
+theta <- abs(rcauchy(params$S, 0, .1))
+omega <- rlkjcorr(1, params$S)
+L_omega <- t(chol(omega))
+L_Omega <- crossprod(diag(theta), L_omega)
+Omega <- tcrossprod(L_Omega)
+
+starting_prices <- log1p(abs(rnorm(params$S, 1000, 20))) %>% matrix() %>% t()
+
+log_prices <- rbind(starting_prices, mvrnorm(n=params$P, rep(0, params$S), Omega))
+
+log_prices %>% 
+  data.frame() %>%
+  set_colnames(1:params$S) %>%
+  mutate_all(cumsum) %>%
+  mutate_all(exp) %>%
+  mutate(t = 1:n()) %>%
+  gather(key="series", value="trend", -t) %>% 
+  ggplot(aes(x = t, y = trend, color=factor(series))) +
+  geom_line(size=0.3) + 
+  theme_minimal()
+```
+
+
+## Make Model And Simulate
+
+```{r make_stan_data}
+prices_assembled <- log_prices %>% 
+  data.frame() %>%
+  mutate_all(cumsum) %>%
+  mutate_all(exp) %>% 
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  dplyr::filter(period != 1) %>%
+  mutate(period = period - 1) %>%
+  gather(key="series", value="price", -period)
+
+prices_for_stan <- data.frame(
+  period = sample(params$P, params$N, replace=T), 
+  series = sample(unique(prices_assembled$series), params$N, replace=T)
+) %>%
+  inner_join(prices_assembled) %>%
+  mutate(
+    y = rnorm(n(), mean=price, sd=50)
+  ) %>%
+  dplyr::filter(y > 0) %>%
+  mutate(
+    weight = 1,
+    id = 1:n()
+  )
+
+predictors <- matrix(rnorm(params$P * params$F), ncol=params$F)
+future_predictors <- matrix(rnorm(params$periods_to_predict * params$F), ncol=params$F)
+
+stan_data <- compose_data(prices_for_stan %>% dplyr::select(-id), 
+                          x=predictors, 
+                          x_predictive = future_predictors,
+                          N_periods = max(prices_for_stan$period),
+                          N_features = ncol(predictors),
+                          periods_to_predict = params$periods_to_predict, 
+                          p = params$p, 
+                          q = params$q, 
+                          ar = params$ar, 
+                          s = rep(params$s, params$S),
+                          .n_name = n_prefix("N"))
+```
+
+
+```{r make_model}
+model <- stan_model("./mbsts.stan")
+```
+
+```{r sample}
+samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2) %>% recover_types(prices_for_stan)
+```
+
+## Inspect Model
+
+### Prediction Accuracy
+
+```{r recover_y_hat}
+y_hat <- samples %>% gather_draws(log_y_hat[id]) %>%
+  mutate(.value = exp(.value) - 1)
+```
+
+```{r residuals}
+y_hat %>% 
+  dplyr::select(id, .value) %>%
+  inner_join(prices_for_stan) %>% 
+  mutate(
+    error = .value - y
+  ) %>%
+  group_by(id, series) %>%
+  summarize(
+    mean_error = mean(error),
+    rmse = sqrt(mean(error^2)), 
+    sd_y_hat = sd(.value)
+  ) %>% 
+  dplyr::select(series, mean_error, rmse, sd_y_hat) %>%
+  gather(key="metric", value="value", -series, -id) %>% 
+  ggplot(aes(x = value, fill=series)) +
+  geom_histogram(bins=40, position="identity", alpha = 1/params$S) + 
+  facet_grid(series ~ metric, scales="free") +
+  theme_minimal() +
+  ggtitle("Residuals")
+```
+
+```{r visualize_predictions}
+prices_for_stan %>% dplyr::select(id, y, series) %>%
+  inner_join(y_hat %>% 
+               group_by(id) %>%
+               summarize(y_hat = mean(.value))) %>%
+  ggplot(aes(x = y, y=y_hat)) +
+  geom_point(size=0.2, alpha=0.2) +
+  facet_wrap(~ series) +
+  scale_x_continuous(limits=c(0, NA)) + 
+  scale_y_continuous(limits=c(0, NA)) + 
+  annotate("segment", x = 0, y = 0, xend=max(prices_for_stan$y), yend=max(prices_for_stan$y), color="red", size=0.5, alpha=0.5) +
+  theme_minimal() + 
+  ggtitle("Prices vs. Mean Predictions")
+```
+
+### Visualize Time Series
+
+```{r recover_time_series}
+weekly_price_hat <- samples %>% gather_draws(log_prices_hat[week, series])
+```
+
+```{r time_series_by_chain}
+true_prices <- log_prices %>% 
+  data.frame() %>%
+  mutate_all(cumsum) %>%
+  mutate_all(exp) %>% 
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(week = 1:n()) %>%
+  dplyr::filter(week != 1) %>%
+  mutate(week = week - 1) %>%
+  gather(key="series", value="y_hat", -week) %>% 
+  mutate(.chain = "gen")
+
+mean_weekly_price_hat <- weekly_price_hat %>%
+  group_by(week, series) %>%
+  summarize(
+    y_hat = exp(mean(.value))
+  ) %>%
+  mutate(.chain = as.character("mean_hat"))
+
+weekly_price_hat %>%
+  group_by(week, series, .chain) %>%
+  summarize(
+    y_hat = exp(mean(.value))
+  ) %>%
+  mutate(.chain = as.character(.chain)) %>%
+  bind_rows(true_prices, mean_weekly_price_hat) %>% 
+  ggplot(aes(x = week, y = y_hat, color=series, linetype=.chain)) +
+  geom_line(size=0.5) +
+  #scale_y_log10() +
+  scale_y_continuous(limits=c(0, max(prices_for_stan$y))) +
+  theme_minimal() +
+  ggtitle("Reconstruction of Time Series By Chain")
+```
+
+### Visualize Price Forecast
+
+```{r gather_price_forecast}
+price_forecast <- samples %>% 
+  gather_draws(log_predicted_prices[week, series]) 
+```
+
+```{r visualize_price_forceast}
+price_forecast %>% 
+  mutate(price = exp(.value)) %>%
+  group_by(series) %>% 
+  ggplot(aes(x = week, y=price, group=series)) +
+  stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
+  scale_fill_brewer("Confidence", palette="Blues") +
+  scale_y_log10() +
+  theme_minimal()
+```
+
+### Visualize Period Components
+
+```{r recover_components}
+trend_hat <- samples %>% gather_draws(delta[week, series])
+seasonality_hat <- samples %>% gather_draws(tau[week, series])
+cyclicality_hat <- samples %>% gather_draws(omega[week, series])
+innovations_hat <- samples %>% gather_draws(epsilon[week, series])
+xi_hat <- samples %>% gather_draws(xi[week, series])
+
+bind_rows(trend_hat, seasonality_hat, cyclicality_hat, innovations_hat, xi_hat) %>%
+  group_by(week, series, .variable, .chain) %>%
+  summarize(.value = mean(.value)) %>% 
+  mutate(
+    component = case_when(
+      .variable == "delta" ~ "trends", 
+      .variable == "epsilon" ~ "innovations", 
+      .variable == "tau" ~ "seasonality", 
+      .variable == "omega" ~ "cyclicality", 
+      .variable == "xi" ~ "predictors"
+    )
+  ) %>%
+  ggplot(aes(x = week, y = .value, color=component, linetype=factor(.chain))) +
+  facet_grid(series ~ .) +
+  geom_line(size=0.2) +
+  theme_minimal() +
+  ggtitle("Components of Price Movements")
+```
+
+
+# DONE

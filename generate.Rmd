@@ -233,6 +233,7 @@ stan_data <- compose_data(prices_for_stan %>% dplyr::select(-id),
                           slab_scale_xi = params$slab_scale,
                           slab_scale_season = params$slab_scale, 
                           slab_scale_cycle = params$slab_scale,
+                          slab_scale_omega = params$slab_scale,
                           .n_name = n_prefix("N"))
 ```
 
@@ -404,5 +405,20 @@ bind_rows(components_by_chain, components_mean) %>%
   ggtitle("Components of Price Movements")
 ```
 
+### Visualize Cyclicality
+
+```{r cyclicality}
+lambda_hat <- samples %>% gather_draws(lambda[series])
+rho_hat <- samples %>% gather_draws(rho[series])
+```
+
+```{r view_cyclicality}
+bind_rows(lambda_hat, rho_hat) %>% 
+  ggplot(aes(x = .value)) + 
+  geom_histogram(bins=60) +
+  facet_grid(.variable ~ series, scales="free") +
+  theme_minimal() + 
+  ggtitle("Estimates of Cycle Frequency and Damping")
+```
 
 # DONE

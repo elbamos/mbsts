@@ -4,11 +4,15 @@ Potential issues:
 - How do we choose the slab_scale? currently using 1
 - Which volatility to use in calculating tau0? currently using sigma_price
 
----- Cyclicality ---- 
-I'm not 100 % confident that I'm correctly interpreting the formula
+---- Other ---- 
+- Do we want shrinkage priors on the trend, seasonality, or price shocks themselves?
+- Prior on seasonality? 
+- Prior on lambda for cyclicality? 
+- Prior on the damping factor for cyclicality?
 
 --- CHANGES ---
 - Gave in and zero-centered the draws of the pre-shrunk params
+- Added HS priors for the volatility of omega_garch, cycle, and seasonality
 */
 
 functions {
@@ -78,7 +82,7 @@ data {
   real<lower=0>                      slab_scale_p;
   real<lower=0>                      slab_scale_q;
   real<lower=0>                      slab_scale_xi;
-  
+
   // Data 
   vector<lower=0>[N]                         y;
   int<lower=1,upper=N_periods>               period[N];
@@ -178,7 +182,7 @@ transformed parameters {
   matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
   // Retain calculation of xi
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; // Predictors
-  
+
   // TREND
   delta[1] = make_delta_t(alpha_trend, block(beta_trend_hs, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
   for (t in 2:(N_periods-1)) {
@@ -203,7 +207,6 @@ transformed parameters {
   omega_star[1] = kappa_star[1]; 
   for (t in 2:(N_periods-1)) {
     omega[t] = (rho_cos_lambda .* omega[t - 1]) + (rho_sin_lambda .* omega_star[t-1]) + kappa[t];
-    # TODO: Confirm that the negative only applies to the first factor not both
     omega_star[t] = - (rho_sin_lambda .* omega[t - 1]) + (rho_cos_lambda .* omega_star[t-1]) + kappa_star[t];
   }
   

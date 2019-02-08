@@ -38,24 +38,30 @@ functions {
     param ~ normal(0, 1);
   }
 
-  matrix apply_hs_prior_m(matrix param_raw, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
-    int M = num_elements(param_raw);
+  real get_tau0_start(real target_sparsity, real M, int N) {
     real m0 =  M * target_sparsity;
-    real tau0 = (m0 / (M - m0)) * (sigma / sqrt(1.0 * N));
-    vector[M] lambda_m_tilde;
-    real c2 = c2_tilde * slab_scale;
-    lambda_m_tilde = sqrt(c2 * square(lambda_m) ./ (c2 + square(tau * tau0) * square(lambda_m)));
-    return tau * tau0 * to_matrix(lambda_m_tilde, rows(param_raw), cols(param_raw)) .* param_raw;
+    // This should be sigma / sqrt(N). But, 
+    // the remainder is constant, so we calculate it once and multiply by sigma 
+    // during inference.
+    return (m0 / (M - m0)) * (1 / sqrt(1.0 * N));
   }
   
-  vector apply_hs_prior_v(vector param_raw, real target_sparsity, int N, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
+  matrix apply_hs_prior_m(matrix param_raw, real tau0_start, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
     int M = num_elements(param_raw);
-    real m0 =  M * target_sparsity;
-    real tau0 = (m0 / (M - m0)) * (sigma / sqrt(1.0 * N));
-    vector[M] lambda_m_tilde;
+    real tau0tau = tau0_start * sigma * tau;
     real c2 = c2_tilde * slab_scale;
-    lambda_m_tilde = sqrt(c2 * square(lambda_m) ./ (c2 + square(tau * tau0) * square(lambda_m)));
-    return tau * tau0 * lambda_m_tilde .* param_raw;
+    vector[M] lambda_m_square = square(lambda_m);
+    vector[M] lambda_m_tilde = sqrt(c2 * lambda_m_square ./ (c2 + square(tau0tau) * lambda_m_square));
+    return tau0tau * to_matrix(lambda_m_tilde, rows(param_raw), cols(param_raw)) .* param_raw;
+  }
+  
+  vector apply_hs_prior_v(vector param_raw, real tau0_start, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
+    int M = num_elements(param_raw);
+    real tau0tau = tau0_start * sigma * tau;
+    real c2 = c2_tilde * slab_scale;
+    vector[M] lambda_m_square = square(lambda_m);
+    vector[M] lambda_m_tilde = sqrt(c2 * lambda_m_square ./ (c2 + square(tau0tau) * lambda_m_square));
+    return tau0tau * lambda_m_tilde .* param_raw;
   }
 }
 
@@ -97,6 +103,11 @@ transformed data {
   real<lower=0>                       min_price =  log1p(min(y));
   real<lower=0>                       max_price = log1p(max(y));
   row_vector[N_series]                zero_vector = rep_row_vector(0, N_series);
+  real                                tau0_vector = get_tau0_start(m0, N_series, N_periods);
+  real                                tau0_trend = get_tau0_start(m0, N_series * ar, N_periods);
+  real                                tau0_beta_p = get_tau0_start(m0, N_series * p, N_periods);
+  real                                tau0_beta_q = get_tau0_start(m0, N_series * q, N_periods);
+  real                                tau0_xi = get_tau0_start(m0, N_series * N_features, N_periods);
 
   for (n in 1:N) {
     log_y[n] = log1p(y[n]);
@@ -122,7 +133,7 @@ parameters {
   // SEASONALITY
   row_vector[N_series]                                w_t[N_periods-1]; // Random variation in seasonality
   // Hierarchical shrinkage prior on theta_season
-  vector<lower=0>[ar * N_series]                      lambda_m_theta_season; 
+  vector<lower=0>[N_series]                           lambda_m_theta_season; 
   real<lower=0>                                       c_theta_season;
   real<lower=0>                                       tau_theta_season;
   vector<lower=0>[N_series]                           theta_season; // Variance in seasonality
@@ -131,7 +142,7 @@ parameters {
   row_vector<lower=0, upper=pi()>[N_series]           lambda; // Frequency
   row_vector<lower=0, upper=1>[N_series]              rho; // Damping factor
   // Hierarchical shrinkage prior on theta_season
-  vector<lower=0>[ar * N_series]                      lambda_m_theta_cycle; 
+  vector<lower=0>[N_series]                           lambda_m_theta_cycle; 
   real<lower=0>                                       c_theta_cycle;
   real<lower=0>                                       tau_theta_cycle;
   vector<lower=0>[N_series]                           theta_cycle; // Variance in cyclicality
@@ -175,12 +186,12 @@ transformed parameters {
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
   // Parameters after applying hierarchical shrinkage
-  matrix[ar, N_series] beta_trend_hs = apply_hs_prior_m(beta_trend, m0, N_periods, sigma_y, slab_scale_trend, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
-  matrix[ar, N_series] beta_p_hs = apply_hs_prior_m(beta_p, m0, N_periods, sigma_y, slab_scale_p, tau_beta_p, lambda_m_beta_p, c_beta_p); 
-  matrix[ar, N_series] beta_q_hs = apply_hs_prior_m(beta_q, m0, N_periods, sigma_y, slab_scale_q, tau_beta_q, lambda_m_beta_q, c_beta_q); 
-  matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, m0, N_periods, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
-  vector[N_series]     theta_season_hs = apply_hs_prior_v(theta_season, m0, N, sigma_y, slab_scale_season, tau_theta_season, lambda_m_theta_season, c_theta_season); 
-  vector[N_series]     theta_cycle_hs = apply_hs_prior_v(theta_cycle, m0, N, sigma_y, slab_scale_cycle, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle); 
+  matrix[ar, N_series] beta_trend_hs = apply_hs_prior_m(beta_trend, tau0_trend, sigma_y, slab_scale_trend, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
+  matrix[ar, N_series] beta_p_hs = apply_hs_prior_m(beta_p, tau0_beta_p, sigma_y, slab_scale_p, tau_beta_p, lambda_m_beta_p, c_beta_p); 
+  matrix[ar, N_series] beta_q_hs = apply_hs_prior_m(beta_q, tau0_beta_q, sigma_y, slab_scale_q, tau_beta_q, lambda_m_beta_q, c_beta_q); 
+  matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
+  vector[N_series]     theta_season_hs = apply_hs_prior_v(theta_season, tau0_vector, sigma_y, slab_scale_season, tau_theta_season, lambda_m_theta_season, c_theta_season); 
+  vector[N_series]     theta_cycle_hs = apply_hs_prior_v(theta_cycle, tau0_vector, sigma_y, slab_scale_cycle, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle); 
   
   // PREDICTORS
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; 

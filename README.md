@@ -6,15 +6,30 @@ The goal of this project is to build, test, and evaluate a generalized model for
 
 Bayesian Structural Time Series are the state-of-the-art approach to modelling time series, particularly financial time series. 
 
-BSTS models take into account local trends, seasonality, cyclicality, and external predictive variables. This is an ideal problem for Bayesian inference, for reasons I will explain when I have time.
+BSTS models have recently been extended to the multivariate case. See https://www.groundai.com/project/multivariate-bayesian-structural-time-series-model/ for an excellent discussion. 
 
-Currently the model includes the following features for multivariate time series:
+BSTS models take into account local trends, seasonality, cyclicality, and external predictive variables.
+
+This model uses "Finnish Horseshoe" hierarchical shrinkage priors  (Piironen and Vehtari 2017a) to encourage sparsity.  See https://betanalpha.github.io/assets/case_studies/bayes_sparse_regression.html.
+
+In addition, this model incorporates CCC-GARCH for handling correlated volatility shocks. 
+
+Full list of features:
   - Linear trends (AR)
   - Seasonality, where each price series may be given its own seasonal period
   - Cyclicality
   - External predictors
   - Correlations in expected returns
-  - GARCH
+  - GARCH(p,q)
   - CCC-GARCH
+  - Hierarchical shrinkage priors 
   
-In its current form, the model has extraordinarily naive priors. A goal of the project is to replace these with hierarchical shrinkage priors. 
+## Notes on Running Stan
+
+Models with hierarchical shrinkage priors tend to require smaller stepsizes and higher treedepths. 
+
+If you see significant numbers of divergent transitions, consider running with 
+
+```
+samples <- sampling(model, control=list(adapt_delta=0.99, max_treedepth=15))
+```

@@ -73,7 +73,7 @@ data {
   int<lower=1> ar; // AR period for the trend
   int<lower=1> p; // GARCH
   int<lower=1> q; // GARCH
-  int<lower=1> s[N_series]; // seasonality periods
+  int<lower=4> s[N_series]; // seasonality periods
   
   // Parameeters controlling sparse feature selection
   real<lower=0,upper=1>              m0; // Sparsity target; proportion of features we expect to be relevant
@@ -276,13 +276,11 @@ model {
 
   // SEASONALITY
   hs_prior_lp(theta_season, tau_theta_season, lambda_m_theta_season, c_theta_season, nu);
-  theta_season ~ cauchy(0, 1); 
 
   // CYCLICALITY
   lambda ~ uniform(0, pi());
   rho ~ uniform(0, 1);
   hs_prior_lp(theta_cycle, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle, nu);
-  theta_cycle ~ cauchy(0, 1);
 
   // REGRESSION
   hs_prior_lp(to_vector(beta_xi), tau_beta_xi, lambda_m_beta_xi, c_beta_xi, nu);

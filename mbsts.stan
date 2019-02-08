@@ -5,18 +5,15 @@ Potential issues:
 - Which volatility to use in calculating tau0? currently using sigma_price
 - What count of observations? Currently the number of periods.
 
----- Cyclicality ---- 
-I'm not 100 % confident that I'm correctly interpreting the formula
-
 ---- Other ---- 
 - Do we want shrinkage priors on the trend, seasonality, or price shocks themselves?
-  - Perhaps the shrinkage prior could be used for theta on seasonality; the theory being, if a price series isn't seasonal, the parameter will shrink toward zero.
 - Prior on seasonality? 
 - Prior on lambda for cyclicality? 
 - Prior on the damping factor for cyclicality?
 
 --- CHANGES ---
 - Gave in and zero-centered the draws of the pre-shrunk params
+- Added HS priors for the volatility of omega_garch, cycle, and seasonality
 */
 
 functions {
@@ -87,6 +84,7 @@ data {
   real<lower=0>                      slab_scale_xi;
   real<lower=0>                      slab_scale_cycle;
   real<lower=0>                      slab_scale_season;
+  real<lower=0>                      slab_scale_omega;
 
   // Data 
   vector<lower=0>[N]                         y;
@@ -157,7 +155,10 @@ parameters {
   
   // INNOVATIONS
   matrix[N_periods-1, N_series]                       epsilon; // Innovations
-  row_vector<lower=0>[N_series]                       omega_garch; // Baseline volatility of innovations
+  vector<lower=0>[N_series]                           lambda_m_omega_garch; 
+  real<lower=0>                                       c_omega_garch;
+  real<lower=0>                                       tau_omega_garch;
+  vector<lower=0>[N_series]                           omega_garch; // Baseline volatility of innovations
     // Hierarchical shrinkage prior on beta_p
   vector<lower=0>[p * N_series]                       lambda_m_beta_p; 
   real<lower=0>                                       c_beta_p;
@@ -192,6 +193,7 @@ transformed parameters {
   matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
   vector[N_series]     theta_season_hs = apply_hs_prior_v(theta_season, tau0_vector, sigma_y, slab_scale_season, tau_theta_season, lambda_m_theta_season, c_theta_season); 
   vector[N_series]     theta_cycle_hs = apply_hs_prior_v(theta_cycle, tau0_vector, sigma_y, slab_scale_cycle, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle); 
+  vector[N_series]     omega_garch_hs = apply_hs_prior_v(omega_garch, tau0_vector, sigma_y, slab_scale_omega, tau_omega_garch, lambda_m_omega_garch, c_omega_garch); 
   
   // PREDICTORS
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; 
@@ -220,12 +222,11 @@ transformed parameters {
   omega_star[1] = kappa_star[1]; 
   for (t in 2:(N_periods-1)) {
     omega[t] = (rho_cos_lambda .* omega[t - 1]) + (rho_sin_lambda .* omega_star[t-1]) + kappa[t];
-    # TODO: Confirm that the negative only applies to the first factor not both
     omega_star[t] = - (rho_sin_lambda .* omega[t - 1]) + (rho_cos_lambda .* omega_star[t-1]) + kappa_star[t];
   }
   
   // ----- UNIVARIATE GARCH ------
-  theta[1] = omega_garch; 
+  theta[1] = omega_garch_hs'; 
   {
     matrix[N_periods-1, N_series] epsilon_squared = square(epsilon);
     
@@ -245,7 +246,7 @@ transformed parameters {
         q_component = columns_dot_product(beta_q_hs, block(epsilon_squared, t - q, 1, q, N_series));
       }
       
-      theta[t] = omega_garch + p_component + q_component;
+      theta[t] = omega_garch_hs' + p_component + q_component;
     }
   }
 
@@ -287,7 +288,7 @@ model {
   hs_prior_lp(to_vector(beta_xi), tau_beta_xi, lambda_m_beta_xi, c_beta_xi, nu);
 
   // INNOVATIONS
-  omega_garch ~ cauchy(0, 1);
+  hs_prior_lp(omega_garch, tau_omega_garch, lambda_m_omega_garch, c_omega_garch, nu);
   hs_prior_lp(to_vector(beta_p), tau_beta_p, lambda_m_beta_p, c_beta_p, nu);
   hs_prior_lp(to_vector(beta_q), tau_beta_q, lambda_m_beta_q, c_beta_q, nu);
   L_omega_garch ~ lkj_corr_cholesky(1);
@@ -405,7 +406,7 @@ generated quantities {
       q_component = columns_dot_product(beta_q_hs, square(block(epsilon_hat, t - q, 1, q, N_series)));
     }
     
-    theta_hat[t] = omega_garch + p_component + q_component;
+    theta_hat[t] = omega_garch_hs' + p_component + q_component;
     epsilon_hat[t] = multi_normal_cholesky_rng(zero_vector', make_L(theta_hat[t], L_omega_garch))';
   }
   

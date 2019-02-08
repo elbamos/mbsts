@@ -4,15 +4,18 @@ author: "Amos B. Elberg"
 date: "2/7/2019"
 output: html_document
 params:
-  N: 1000
+  N: 500
   S: 3
-  P: 50
+  P: 30
   F: 5
   periods_to_predict: 15
   p: 2
   q: 2
   ar: 2
   s: 4
+  nu: 3
+  slab_scale: 1
+  m0: .05
 ---
 
 ```{r setup, include=FALSE}
@@ -97,11 +100,19 @@ stan_data <- compose_data(prices_for_stan %>% dplyr::select(-id),
                           x_predictive = future_predictors,
                           N_periods = max(prices_for_stan$period),
                           N_features = ncol(predictors),
+                          # Parameters controlling the model
                           periods_to_predict = params$periods_to_predict, 
                           p = params$p, 
                           q = params$q, 
                           ar = params$ar, 
                           s = rep(params$s, params$S),
+                          # Parameters controlling hierarchical shrinkage
+                          nu = params$nu, 
+                          m0 = params$m0,
+                          slab_scale_trend = params$slab_scale,
+                          slab_scale_p = params$slab_scale, 
+                          slab_scale_q = params$slab_scale,
+                          slab_scale_xi = params$slab_scale,
                           .n_name = n_prefix("N"))
 ```
 
@@ -228,7 +239,7 @@ innovations_hat <- samples %>% gather_draws(epsilon[week, series])
 xi_hat <- samples %>% gather_draws(xi[week, series])
 
 bind_rows(trend_hat, seasonality_hat, cyclicality_hat, innovations_hat, xi_hat) %>%
-  group_by(week, series, .variable, .chain) %>%
+  group_by(week, series, .variable) %>%
   summarize(.value = mean(.value)) %>% 
   mutate(
     component = case_when(
@@ -239,7 +250,7 @@ bind_rows(trend_hat, seasonality_hat, cyclicality_hat, innovations_hat, xi_hat) 
       .variable == "xi" ~ "predictors"
     )
   ) %>%
-  ggplot(aes(x = week, y = .value, color=component, linetype=factor(.chain))) +
+  ggplot(aes(x = week, y = .value, color=component)) +
   facet_grid(series ~ .) +
   geom_line(size=0.2) +
   theme_minimal() +

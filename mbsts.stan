@@ -3,6 +3,7 @@ Potential issues:
 ---- Hierarchical shrinkage ----
 - How do we choose the slab_scale? currently using 1
 - Which volatility to use in calculating tau0? currently using sigma_price
+- What count of observations? Currently the number of periods.
 
 ---- Cyclicality ---- 
 I'm not 100 % confident that I'm correctly interpreting the formula
@@ -150,15 +151,17 @@ transformed parameters {
   matrix[N_periods-1, N_series]                       theta; // Conditional variance of innovations 
   vector[N]                                           log_y_hat; 
   matrix[N_series, N_series]                          L_Omega_trend = make_L(theta_trend, L_omega_trend);
+  // Helpers to simplify the calculation of cyclicality
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
-    // TODO: Is sigma_y the correct volatility to use here?
-  // TODO: How do we determine the slab scale? 
+  // Parameters after applying hierarchical shrinkage
   matrix[ar, N_series] beta_trend_hs = apply_hs_prior(beta_trend, m0, N_periods, sigma_y, slab_scale_trend, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
   matrix[ar, N_series] beta_p_hs = apply_hs_prior(beta_p, m0, N_periods, sigma_y, slab_scale_p, tau_beta_p, lambda_m_beta_p, c_beta_p); 
   matrix[ar, N_series] beta_q_hs = apply_hs_prior(beta_q, m0, N_periods, sigma_y, slab_scale_q, tau_beta_q, lambda_m_beta_q, c_beta_q); 
   matrix[N_features, N_series] beta_xi_hs = apply_hs_prior(beta_xi, m0, N_periods, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
-  matrix[N_periods, N_series]                         xi = x * beta_xi_hs; // Predictors
+  // PREDICTORS
+  matrix[N_periods, N_series]                         xi = x * beta_xi_hs; 
+  
   
   // TREND
   delta[1] = make_delta_t(alpha_trend, block(beta_trend_hs, ar, 1, 1, N_series), delta_t0, nu_trend[1]);

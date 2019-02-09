@@ -12,7 +12,7 @@ Potential issues:
 
 --- CHANGES ---
 - Gave in and zero-centered the draws of the pre-shrunk params
-- Added HS priors for the volatility of omega_garch, cycle, and seasonality
+- Added HS priors for the volatility of cycle, and seasonality
 */
 
 functions {
@@ -308,7 +308,7 @@ generated quantities {
   matrix[N_series, N_series]                       innovation_corr = crossprod(L_omega_garch);
   
   for (t in 1:periods_to_predict) {
-    nu_trend_hat[t] = multi_normal_cholesky_rng(to_vector(zero_vector), L_Omega_trend)';
+    nu_trend_hat[t] = multi_normal_cholesky_rng(zero_vector', L_Omega_trend)';
     kappa_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_cycle))';
     kappa_star_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_cycle))';
     w_t_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_season))';

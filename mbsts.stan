@@ -155,10 +155,7 @@ parameters {
   
   // INNOVATIONS
   matrix[N_periods-1, N_series]                       epsilon; // Innovations
-  vector<lower=0>[N_series]                           lambda_m_omega_garch; 
-  real<lower=0>                                       c_omega_garch;
-  real<lower=0>                                       tau_omega_garch;
-  vector<lower=0>[N_series]                           omega_garch; // Baseline volatility of innovations
+  row_vector<lower=0>[N_series]                       omega_garch; // Baseline volatility of innovations
     // Hierarchical shrinkage prior on beta_p
   vector<lower=0>[p * N_series]                       lambda_m_beta_p; 
   real<lower=0>                                       c_beta_p;
@@ -193,7 +190,6 @@ transformed parameters {
   matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
   vector[N_series]     theta_season_hs = apply_hs_prior_v(theta_season, tau0_vector, sigma_y, slab_scale_season, tau_theta_season, lambda_m_theta_season, c_theta_season); 
   vector[N_series]     theta_cycle_hs = apply_hs_prior_v(theta_cycle, tau0_vector, sigma_y, slab_scale_cycle, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle); 
-  vector[N_series]     omega_garch_hs = apply_hs_prior_v(omega_garch, tau0_vector, sigma_y, slab_scale_omega, tau_omega_garch, lambda_m_omega_garch, c_omega_garch); 
   
   // PREDICTORS
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; 
@@ -226,7 +222,7 @@ transformed parameters {
   }
   
   // ----- UNIVARIATE GARCH ------
-  theta[1] = omega_garch_hs'; 
+  theta[1] = omega_garch; 
   {
     matrix[N_periods-1, N_series] epsilon_squared = square(epsilon);
     
@@ -246,7 +242,7 @@ transformed parameters {
         q_component = columns_dot_product(beta_q_hs, block(epsilon_squared, t - q, 1, q, N_series));
       }
       
-      theta[t] = omega_garch_hs' + p_component + q_component;
+      theta[t] = omega_garch + p_component + q_component;
     }
   }
 
@@ -286,7 +282,7 @@ model {
   hs_prior_lp(to_vector(beta_xi), tau_beta_xi, lambda_m_beta_xi, c_beta_xi, nu);
 
   // INNOVATIONS
-  hs_prior_lp(omega_garch, tau_omega_garch, lambda_m_omega_garch, c_omega_garch, nu);
+  omega_garch ~ cauchy(0, 1);
   hs_prior_lp(to_vector(beta_p), tau_beta_p, lambda_m_beta_p, c_beta_p, nu);
   hs_prior_lp(to_vector(beta_q), tau_beta_q, lambda_m_beta_q, c_beta_q, nu);
   L_omega_garch ~ lkj_corr_cholesky(1);
@@ -322,6 +318,8 @@ generated quantities {
   matrix[periods_to_predict, N_series]             kappa_hat;
   matrix[periods_to_predict, N_series]             kappa_star_hat; 
   matrix[periods_to_predict, N_series]             w_t_hat;
+  matrix[N_series, N_series]                       trend_corr = crossprod(L_omega_trend);
+  matrix[N_series, N_series]                       innovation_corr = crossprod(L_omega_garch);
   
   for (t in 1:periods_to_predict) {
     nu_trend_hat[t] = multi_normal_cholesky_rng(to_vector(zero_vector), L_Omega_trend)';
@@ -404,7 +402,7 @@ generated quantities {
       q_component = columns_dot_product(beta_q_hs, square(block(epsilon_hat, t - q, 1, q, N_series)));
     }
     
-    theta_hat[t] = omega_garch_hs' + p_component + q_component;
+    theta_hat[t] = omega_garch + p_component + q_component;
     epsilon_hat[t] = multi_normal_cholesky_rng(zero_vector', make_L(theta_hat[t], L_omega_garch))';
   }
   

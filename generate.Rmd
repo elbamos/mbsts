@@ -7,12 +7,12 @@ params:
   N: 500
   S: 3
   P: 30
-  F: 5
+  F: 2
   periods_to_predict: 15
   p: 2
   q: 2
   ar: 2
-  s: 4
+  s: 6
   nu: 3
   slab_scale: 1
   m0: .05
@@ -233,7 +233,6 @@ stan_data <- compose_data(prices_for_stan %>% dplyr::select(-id),
                           slab_scale_xi = params$slab_scale,
                           slab_scale_season = params$slab_scale, 
                           slab_scale_cycle = params$slab_scale,
-                          slab_scale_omega = params$slab_scale,
                           .n_name = n_prefix("N"))
 ```
 
@@ -244,10 +243,8 @@ model <- stan_model("./mbsts.stan")
 
 ```{r sample}
 samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2,
-                    control=list(
-                      adapt_delta=0.99,
-                      max_treedepth=15
-                    )) %>% recover_types(prices_for_stan)
+                    control=list(adapt_delta=0.95)
+                   ) %>% recover_types(prices_for_stan)
 ```
 
 ## Inspect Model
@@ -272,8 +269,9 @@ y_hat %>%
     rmse = sqrt(mean(error^2)), 
     sd_y_hat = sd(.value)
   ) %>% 
-  dplyr::select(series, mean_error, rmse, sd_y_hat) %>%
-  gather(key="metric", value="value", -series, -id) %>% 
+  ungroup() %>%
+  dplyr::select(series, mean_error, rmse, sd_y_hat) %>% 
+  gather(key="metric", value="value", -series) %>% 
   ggplot(aes(x = value, fill=series)) +
   geom_histogram(bins=40, position="identity", alpha = 1/params$S) + 
   facet_grid(series ~ metric, scales="free") +
@@ -419,6 +417,38 @@ bind_rows(lambda_hat, rho_hat) %>%
   facet_grid(.variable ~ series, scales="free") +
   theme_minimal() + 
   ggtitle("Estimates of Cycle Frequency and Damping")
+```
+
+### Visualize Trend Correlations
+
+```{r recover_return_correlations}
+trend_corr_hat <- samples %>% gather_draws(trend_corr[series1, series2])
+```
+
+```{r show_trend_corr}
+trend_corr_hat %>%
+  dplyr::filter(series1 != series2) %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=100) +
+  facet_grid(series1 ~ series2) +
+  theme_minimal() + 
+  ggtitle("Trend Correlations")
+```
+
+### Visualize Innovation Correlations
+
+```{r recover_innovation_correlations}
+innovation_corr_hat <- samples %>% gather_draws(innovation_corr[series1, series2])
+```
+
+```{r show_innovation_corr}
+innovation_corr_hat %>%
+  dplyr::filter(series1 != series2) %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=100) +
+  facet_grid(series1 ~ series2) +
+  theme_minimal() + 
+  ggtitle("Innovation Correlations")
 ```
 
 # DONE

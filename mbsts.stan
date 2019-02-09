@@ -84,7 +84,6 @@ data {
   real<lower=0>                      slab_scale_xi;
   real<lower=0>                      slab_scale_cycle;
   real<lower=0>                      slab_scale_season;
-  real<lower=0>                      slab_scale_omega;
 
   // Data 
   vector<lower=0>[N]                         y;

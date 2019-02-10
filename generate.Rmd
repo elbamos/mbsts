@@ -12,7 +12,7 @@ params:
   p: 2
   q: 2
   ar: 2
-  s: 4
+  s: 6
 ---
 
 ```{r setup, include=FALSE}
@@ -38,48 +38,164 @@ library(tidyr)
 set.seed(1974)
 ```
 
-```{r generate_price_series}
-theta <- abs(rcauchy(params$S, 0, .1))
-omega <- rlkjcorr(1, params$S)
-L_omega <- t(chol(omega))
-L_Omega <- crossprod(diag(theta), L_omega)
-Omega <- tcrossprod(L_Omega)
+```{r trends}
+theta_trend <- abs(rcauchy(params$S, 0, .01))
+omega_trend <- rlkjcorr(1, params$S)
+alpha_trend <- abs(rnorm(params$S, 0, .01))
+beta_trend <- pmin(abs(matrix(rnorm(params$S * params$ar, sd=0.05),  ncol=params$S)), .3) 
+L_omega_trend <- t(chol(omega_trend))
+L_Omega_trend <- crossprod(diag(theta_trend), L_omega_trend)
+Omega_trend <- tcrossprod(L_Omega_trend)
 
-starting_prices <- log1p(abs(rnorm(params$S, 1000, 20))) %>% matrix() %>% t()
+nu <- mvrnorm(n=params$P, rep(0, params$S), Omega_trend)
 
-log_prices <- rbind(starting_prices, mvrnorm(n=params$P, rep(0, params$S), Omega))
+delta <- list(
+)
 
-log_prices %>% 
+for (t in 1:nrow(nu)) {
+  if (t == 1) delta <- c(delta, list(nu[1, ] + alpha_trend)) 
+  else if (t <= params$ar) {
+    past_delta <-  do.call(rbind, delta)
+    beta <- beta_trend[(nrow(beta_trend) - t + 2):nrow(beta_trend), ]
+    delta <- c(delta, list(
+      alpha_trend + colSums(beta * past_delta - alpha_trend) + nu[t, ]
+    ))
+  } else {
+    first_row <- length(delta) - params$ar + 1
+    past_delta <- do.call(rbind, delta[first_row:(first_row + params$ar)])
+    delta <- c(delta, list(
+      alpha_trend + colSums(beta_trend * (past_delta - alpha_trend)) + nu[t, ]
+    ))
+  }
+}
+
+delta <- do.call(rbind, delta)
+delta %>% data.frame() %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="trend", -period) %>%
+  ggplot(aes(x = period, y=trend, color=series)) + 
+  geom_line(size=0.5, alpha=0.4) +
+  theme_minimal() + 
+  ggtitle("Generated Trends")
+```
+
+```{r seasonality}
+theta_season <- abs(rcauchy(params$S, scale=.05))
+w <- matrix(rnorm(params$S * params$P, sd=theta_season^2), byrow=T, ncol=params$S)
+tau <- list()
+
+for (t in 1:params$P) {
+  if (t == 1) tau <- c(tau, list(-w[t, ]))
+  else if (t == 2) tau <- c(tau, list(-tau[[1]] + w[t, ]))
+  else {
+    prior_tau <- do.call(rbind, tau[max(1, t - params$s):(t-1)])
+    tau <- c(tau, list(-colSums(prior_tau) + w[t, ]))
+  }
+}
+
+tau <- do.call(rbind, tau)
+
+tau %>% data.frame() %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="seasonality", -period) %>%
+  ggplot(aes(x = period, y=seasonality, color=series)) + 
+  geom_line(size=0.5, alpha=0.4) +
+  theme_minimal() + 
+  ggtitle("Generated Seasonality")
+
+```
+
+```{r cyclicality}
+lambda <- runif(params$S, 0, pi)
+rho <- runif(params$S, 0, 1)
+theta_cycle <- abs(rcauchy(params$S, 0, 0.01))
+kappa <- matrix(rnorm(params$S * params$P, sd = theta_cycle), byrow = T, ncol=params$S)
+kappa_star <- matrix(rnorm(params$S * params$P, sd = theta_cycle), byrow = T, ncol=params$S)
+
+omega <- list(
+  kappa[1, ]
+)
+omega_star <- list(
+  kappa_star[1, ]
+)
+
+for (t in 2:params$P) { 
+  omega <- c(omega, list(
+    (rho * cos(lambda) * omega[[t-1]][[1]]) + (rho * sin(lambda) * omega_star[[t-1]][[1]]) + kappa[t, ]
+  ))
+  omega_star <- c(omega_star, list(
+    -(rho * sin(lambda) * omega[[t-1]][[1]]) + (rho * cos(lambda) * omega_star[[t-1]][[1]]) + kappa_star[t, ]
+  ))
+}
+
+omega <- do.call(rbind, omega)
+
+omega %>% data.frame() %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="cyclicality", -period) %>% 
+  ggplot(aes(x = period, y=cyclicality, color=series)) + 
+  geom_line(size=0.5, alpha=0.4) +
+  theme_minimal() + 
+  ggtitle("Generated Cyclicality")
+```
+
+```{r innovations}
+theta_epsilon <- abs(rcauchy(params$S, 0, .05))
+omega_epsilon <- rlkjcorr(1, params$S)
+L_omega_epsilon <- t(chol(omega_epsilon))
+L_Omega_epsilon <- crossprod(diag(theta_epsilon), L_omega_epsilon)
+Omega_epsilon <- tcrossprod(L_Omega_epsilon)
+
+epsilon <- mvrnorm(n=params$P, rep(0, params$S), Omega_epsilon)
+
+epsilon %>% data.frame() %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="innovation", -period) %>% 
+  ggplot(aes(x = period, y=innovation, color=series)) + 
+  geom_line(size=0.5, alpha=0.4) +
+  theme_minimal() + 
+  ggtitle("Generated Innovations")
+```
+
+```{r assemble_price_series}
+price_fluctuations <- delta + tau + omega + epsilon
+
+starting_prices <- log1p(runif(params$S, 500, 2000))
+
+prices <- rbind(starting_prices, price_fluctuations) %>%
   data.frame() %>%
-  set_colnames(1:params$S) %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
   mutate_all(cumsum) %>%
-  mutate_all(exp) %>%
-  mutate(t = 1:n()) %>%
-  gather(key="series", value="trend", -t) %>% 
-  ggplot(aes(x = t, y = trend, color=factor(series))) +
-  geom_line(size=0.3) + 
-  theme_minimal()
+  dplyr::filter(row_number() != 1) %>% 
+  mutate(period = 1:n())
+
+prices %>%
+  gather(key="series", value="log_price", -period) %>%
+  mutate(price = exp(log_price) - 1) %>%
+  ggplot(aes(x = period, y = price, color=series)) + 
+  geom_line(size=0.5, alpha=0.3) + 
+  theme_minimal() + 
+  ggtitle("Generated Price Series")
 ```
 
 
 ## Make Model And Simulate
 
 ```{r make_stan_data}
-prices_assembled <- log_prices %>% 
-  data.frame() %>%
-  mutate_all(cumsum) %>%
-  mutate_all(exp) %>% 
-  set_colnames(paste("series", 1:params$S, sep="_")) %>%
-  mutate(period = 1:n()) %>%
-  dplyr::filter(period != 1) %>%
-  mutate(period = period - 1) %>%
-  gather(key="series", value="price", -period)
+prices_gathered <- prices %>%
+  gather(key="series", value="log_price", -period) %>%
+  mutate(price = exp(log_price) - 1) %>%
+  dplyr::select(-log_price)
 
 prices_for_stan <- data.frame(
   period = sample(params$P, params$N, replace=T), 
-  series = sample(unique(prices_assembled$series), params$N, replace=T)
-) %>%
-  inner_join(prices_assembled) %>%
+  series = sample(unique(prices_gathered$series), params$N, replace=T)
+) %>% 
+  inner_join(prices_gathered) %>%
   mutate(
     y = rnorm(n(), mean=price, sd=50)
   ) %>%

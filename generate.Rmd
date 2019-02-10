@@ -4,9 +4,9 @@ author: "Amos B. Elberg"
 date: "2/7/2019"
 output: html_document
 params:
-  N: 500
-  S: 3
-  P: 30
+  N: 2000
+  S: 10
+  P: 100
   F: 2
   periods_to_predict: 15
   p: 2
@@ -40,7 +40,6 @@ library(tidyr)
 ```{r seed}
 set.seed(1974)
 ```
-
 
 ```{r trends}
 theta_trend <- abs(rcauchy(params$S, 0, .01))
@@ -231,8 +230,6 @@ stan_data <- compose_data(prices_for_stan %>% dplyr::select(-id),
                           slab_scale_p = params$slab_scale, 
                           slab_scale_q = params$slab_scale,
                           slab_scale_xi = params$slab_scale,
-                          slab_scale_season = params$slab_scale, 
-                          slab_scale_cycle = params$slab_scale,
                           .n_name = n_prefix("N"))
 ```
 
@@ -242,7 +239,7 @@ model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2,
+samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=2,
                     control=list(adapt_delta=0.95)
                    ) %>% recover_types(prices_for_stan)
 ```

@@ -23,6 +23,7 @@ data {
   int<lower=1> p; // GARCH
   int<lower=1> q; // GARCH
   int<lower=1> s[N_series]; // seasonality periods
+  real<lower=1> period_scale; 
   
   // Data 
   vector<lower=0>[N]                         y;
@@ -39,15 +40,18 @@ transformed data {
   real<lower=0>                       min_price =  log1p(min(y));
   real<lower=0>                       max_price = log1p(max(y));
   row_vector[N_series]                zero_vector = rep_row_vector(0, N_series);
+  vector<lower=0>[N]                  inv_weights;
+  real<lower=0>                       inv_period_scale = 1.0 / period_scale; 
 
   for (n in 1:N) {
     log_y[n] = log1p(y[n]);
+    inv_weights[n] = 1.0 / weight[n];
   }
 }
 
 
 parameters {
-  real<lower=0>                                sigma_y; // observation variance
+  real<lower=0>                                       sigma_y; // observation variance
   
   // TREND delta_t
   matrix[1, N_series]                                 delta_t0; // Trend at time 0
@@ -165,25 +169,25 @@ model {
   
   // ----- PRIORS ------
   // TREND 
-  to_vector(delta_t0) ~ normal(0, 1); 
-  to_vector(alpha_trend) ~ normal(0, 1); 
+  to_vector(delta_t0) ~ normal(0, inv_period_scale); 
+  to_vector(alpha_trend) ~ normal(0, inv_period_scale); 
   to_vector(beta_trend) ~ normal(0, 1); 
-  to_vector(theta_trend) ~ cauchy(0, 1); 
+  to_vector(theta_trend) ~ cauchy(0, inv_period_scale); 
   L_omega_trend ~ lkj_corr_cholesky(1);
 
   // SEASONALITY
-  theta_season ~ cauchy(0, 1); 
+  theta_season ~ cauchy(0, inv_period_scale); 
 
   // CYCLICALITY
   lambda ~ uniform(0, pi());
   rho ~ uniform(0, 1);
-  theta_cycle ~ cauchy(0, 1);
+  theta_cycle ~ cauchy(0, inv_period_scale);
 
   // REGRESSION
-  to_vector(beta_xi) ~ normal(0, 1); 
+  to_vector(beta_xi) ~ normal(0, inv_period_scale); 
 
   // INNOVATIONS
-  omega_garch ~ cauchy(0, 1);
+  omega_garch ~ cauchy(0, inv_period_scale);
   to_vector(beta_p) ~ normal(0, 1);
   to_vector(beta_q) ~ normal(0, 1); 
   L_omega_garch ~ lkj_corr_cholesky(1);
@@ -202,7 +206,7 @@ model {
 
   // ----- OBSERVATIONS ------
   sigma_y ~ cauchy(0, 0.01);
-  price_error ~ normal(0, inv(weight) * sigma_y);
+  price_error ~ normal(0, inv_weights * sigma_y);
 }
 
 generated quantities {

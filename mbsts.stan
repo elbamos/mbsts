@@ -12,7 +12,6 @@ Potential issues:
 
 --- CHANGES ---
 - Gave in and zero-centered the draws of the pre-shrunk params
-- Added HS priors for the volatility of cycle, and seasonality
 */
 
 functions {
@@ -78,7 +77,7 @@ data {
   // Parameeters controlling sparse feature selection
   real<lower=0,upper=1>              m0; // Sparsity target; proportion of features we expect to be relevant
   int<lower=1>                       nu; // nu parameters for horseshoe prior
-  real<lower=0>                      slab_scale_trend;
+  real<lower=0>                      slab_scale_ar;
   real<lower=0>                      slab_scale_p;
   real<lower=0>                      slab_scale_q;
   real<lower=0>                      slab_scale_xi;
@@ -120,9 +119,9 @@ parameters {
   matrix[1, N_series]                                 delta_t0; // Trend at time 0
   row_vector[N_series]                                alpha_trend; // long-term trend
   // Hierarchical shrinkage prior on beta_trend 
-  vector<lower=0>[ar * N_series]                      lambda_m_beta_trend; 
-  real<lower=0>                                       c_beta_trend;
-  real<lower=0>                                       tau_beta_trend;
+  vector<lower=0>[ar * N_series]                      lambda_m_beta_ar; 
+  real<lower=0>                                       c_beta_ar;
+  real<lower=0>                                       tau_beta_ar;
   matrix<lower=0,upper=1>[ar, N_series]               beta_trend; // Learning rate of trend
   row_vector[N_series]                                nu_trend[N_periods-1]; // Random changes in trend
   row_vector<lower=0>[N_series]                       theta_trend; // Variance in changes in trend
@@ -176,7 +175,7 @@ transformed parameters {
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
   // Hierarchical shrinkage
-  matrix[ar, N_series] beta_trend_hs = apply_hs_prior_m(beta_trend, tau0_trend, sigma_y, slab_scale_trend, tau_beta_trend, lambda_m_beta_trend, c_beta_trend); 
+  matrix[ar, N_series] beta_ar_hs = apply_hs_prior_m(beta_trend, tau0_trend, sigma_y, slab_scale_ar, tau_beta_ar, lambda_m_beta_ar, c_beta_ar); 
   matrix[ar, N_series] beta_p_hs = apply_hs_prior_m(beta_p, tau0_beta_p, sigma_y, slab_scale_p, tau_beta_p, lambda_m_beta_p, c_beta_p); 
   matrix[ar, N_series] beta_q_hs = apply_hs_prior_m(beta_q, tau0_beta_q, sigma_y, slab_scale_q, tau_beta_q, lambda_m_beta_q, c_beta_q); 
   matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
@@ -184,12 +183,12 @@ transformed parameters {
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; // Predictors
 
   // TREND
-  delta[1] = make_delta_t(alpha_trend, block(beta_trend_hs, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
+  delta[1] = make_delta_t(alpha_trend, block(beta_ar_hs, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
   for (t in 2:(N_periods-1)) {
     if (t <= ar) {
-      delta[t] = make_delta_t(alpha_trend, block(beta_trend_hs, ar - t + 2, 1, t - 1, N_series), block(delta, 1, 1, t - 1, N_series), nu_trend[t]);
+      delta[t] = make_delta_t(alpha_trend, block(beta_ar_hs, ar - t + 2, 1, t - 1, N_series), block(delta, 1, 1, t - 1, N_series), nu_trend[t]);
     } else {
-      delta[t] = make_delta_t(alpha_trend, beta_trend_hs, block(delta, t - ar, 1, ar, N_series), nu_trend[t]);
+      delta[t] = make_delta_t(alpha_trend, beta_ar_hs, block(delta, t - ar, 1, ar, N_series), nu_trend[t]);
     }
   }
 
@@ -254,7 +253,7 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_trend) ~ normal(0, inv_period_scale); 
-  hs_prior_lp(to_vector(beta_trend), tau_beta_trend, lambda_m_beta_trend, c_beta_trend, nu);
+  hs_prior_lp(to_vector(beta_trend), tau_beta_ar, lambda_m_beta_ar, c_beta_ar, nu);
   to_vector(theta_trend) ~ cauchy(0, inv_period_scale); 
   L_omega_trend ~ lkj_corr_cholesky(1);
 
@@ -307,25 +306,32 @@ generated quantities {
   matrix[N_series, N_series]                       trend_corr = crossprod(L_omega_trend);
   matrix[N_series, N_series]                       innovation_corr = crossprod(L_omega_garch);
   
-  for (t in 1:periods_to_predict) {
-    nu_trend_hat[t] = multi_normal_cholesky_rng(zero_vector', L_Omega_trend)';
-    kappa_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_cycle))';
-    kappa_star_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_cycle))';
-    w_t_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_season))';
+  {
+    matrix[N_series, N_series] diag_cycle = diag_matrix(theta_cycle);
+    matrix[N_series, N_series] diag_season = diag_matrix(theta_season);
+    vector[N_series] zero_t = zero_vector'; 
+    
+    for (t in 1:periods_to_predict) {
+      nu_trend_hat[t] = multi_normal_cholesky_rng(zero_t, L_Omega_trend)';
+      kappa_hat[t] = multi_normal_rng(zero_t, diag_cycle)';
+      kappa_star_hat[t] = multi_normal_rng(zero_t, diag_cycle)';
+      w_t_hat[t] = multi_normal_rng(zero_t, diag_season)';
+    }
   }
+
   
   // TREND
   for (t in 1:periods_to_predict) {
     if (t == 1) {
-      delta_hat[1] = make_delta_t(alpha_trend, beta_trend_hs, block(delta, N_periods - ar, 1, ar, N_series), nu_trend_hat[1]);
+      delta_hat[1] = make_delta_t(alpha_trend, beta_ar_hs, block(delta, N_periods - ar, 1, ar, N_series), nu_trend_hat[1]);
     } else if (t <= ar) {
       int periods_forward = t - 1;
       int periods_back = ar - periods_forward;
       int start_period = N_periods- 1 - periods_back; 
-      delta_hat[t] = make_delta_t(alpha_trend, beta_trend_hs, append_row(block(delta, start_period, 1, periods_back, N_series), 
+      delta_hat[t] = make_delta_t(alpha_trend, beta_ar_hs, append_row(block(delta, start_period, 1, periods_back, N_series), 
                                                                       block(delta_hat, 1, 1, periods_forward, N_series)), nu_trend_hat[t]);
     } else {
-      delta_hat[t] = make_delta_t(alpha_trend, beta_trend_hs, block(delta_hat, t - ar, 1, ar, N_series), nu_trend_hat[t]);
+      delta_hat[t] = make_delta_t(alpha_trend, beta_ar_hs, block(delta_hat, t - ar, 1, ar, N_series), nu_trend_hat[t]);
     }
   }
   
@@ -392,10 +398,14 @@ generated quantities {
     epsilon_hat[t] = multi_normal_cholesky_rng(zero_vector', make_L(theta_hat[t], L_omega_garch))';
   }
   
-  
-  log_predicted_prices[1] = log_prices_hat[N_periods] + delta_hat[1] + tau_hat[1] + omega_hat[1] + xi_hat[1] + epsilon_hat[1];
-  for (t in 2:periods_to_predict) {
-    log_predicted_prices[t] = log_predicted_prices[t-1] + delta_hat[t] + tau_hat[t] + omega_hat[t] + xi_hat[t] + epsilon_hat[t];
+  {
+    matrix[periods_to_predict, N_series] price_changes = delta_hat + tau_hat + omega_hat + xi_hat + epsilon_hat;
+    
+    log_predicted_prices[1] = log_prices_hat[N_periods] + price_changes[1];
+    for (t in 2:periods_to_predict) {
+      log_predicted_prices[t] = log_predicted_prices[t-1] + price_changes[t];
+    }
   }
+
 }
 

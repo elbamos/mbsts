@@ -15,7 +15,6 @@ params:
   ar: 2
   s: 6
   nu: 3
-  period_scale: 52
   slab_scale: 1
   m0: .05
 ---
@@ -260,7 +259,7 @@ model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=3,
+samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2,
                     control=list(adapt_delta=0.95)) %>% recover_types(price_set)
 ```
 
@@ -306,7 +305,7 @@ price_set %>% dplyr::select(id, y, series) %>%
   facet_wrap(~ series) +
   scale_x_continuous(limits=c(0, NA)) + 
   scale_y_continuous(limits=c(0, NA)) + 
-  annotate("segment", x = 0, y = 0, xend=max(prices_for_stan$y), yend=max(prices_for_stan$y), color="red", size=0.5, alpha=0.5) +
+  annotate("segment", x = 0, y = 0, xend=max(price_set$y), yend=max(price_set$y), color="red", size=0.5, alpha=0.5) +
   theme_minimal() + 
   ggtitle("Prices vs. Mean Predictions")
 ```
@@ -356,7 +355,7 @@ price_forecast %>%
   ggplot(aes(x = period, y=price, group=series)) +
   stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
   scale_fill_brewer("Confidence", palette="Blues") +
-  #scale_y_log10() +
+  scale_y_log10() +
   theme_minimal()
 ```
 
@@ -428,6 +427,12 @@ bind_rows(lambda_hat, rho_hat) %>%
 
 ```{r recover_return_correlations}
 trend_corr_hat <- samples %>% gather_draws(trend_corr[series1, series2])
+
+true_trends <- omega_trend %>%
+  data.frame() %>%
+  set_colnames(1:ncol(omega_trend)) %>%
+  mutate(series1 = 1:n()) %>%
+  gather(key="series2", value=".value", -series1)
 ```
 
 ```{r show_trend_corr}
@@ -435,6 +440,8 @@ trend_corr_hat %>%
   dplyr::filter(series1 != series2) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=100) +
+  geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
+  geom_vline(data=true_trends, aes(xintercept=.value), color="blue", size=0.2) +
   facet_grid(series1 ~ series2) +
   theme_minimal() + 
   ggtitle("Trend Correlations")
@@ -444,6 +451,12 @@ trend_corr_hat %>%
 
 ```{r recover_innovation_correlations}
 innovation_corr_hat <- samples %>% gather_draws(innovation_corr[series1, series2])
+
+true_innovations <- omega_epsilon %>%
+  data.frame() %>%
+  set_colnames(1:ncol(omega_trend)) %>%
+  mutate(series1 = 1:n()) %>%
+  gather(key="series2", value=".value", -series1)
 ```
 
 ```{r show_innovation_corr}
@@ -451,6 +464,8 @@ innovation_corr_hat %>%
   dplyr::filter(series1 != series2) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=100) +
+  geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
+  geom_vline(data=true_innovations, aes(xintercept=.value), color="blue", size=0.2) +
   facet_grid(series1 ~ series2) +
   theme_minimal() + 
   ggtitle("Innovation Correlations")
@@ -466,7 +481,8 @@ shrinkage_hat %>%
   mutate(.variable = str_replace(.variable, "_hs", "")) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=60) +
-  facet_grid(.variable + feature ~ series, scales ="free") +
+  geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
+  facet_grid(.variable + feature ~ series, scales ="free_x") +
   theme_minimal()
 ```
 

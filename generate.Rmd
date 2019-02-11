@@ -228,6 +228,21 @@ sampled_stan_data <- assemble_stan_data(dplyr::select(sampled_prices_for_stan, -
 
 exact_stan_data <- prices_gathered %>% rename(y=price) %>% mutate(weight = 1) %>% assemble_stan_data(predictors, future_predictors)
 
+prices_gathered %<>% mutate(id = 1:n()) %>% rename(y=price)
+```
+
+```{r select_price_set}
+exact <- T
+
+if (exact) {
+  stan_data <<- exact_stan_data
+  price_set <<- prices_gathered
+} else {
+  stan_data <<- sampled_stan_data
+  price_set <<- sampled_prices_for_stan 
+}
+  
+
 ```
 
 
@@ -236,10 +251,7 @@ model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-stan_data <- exact_stan_data #sampled_stan_data
-samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=3)
-samples %<>% recover_types(prices_gathered %>% dplyr::mutate(id = 1:n()))
-# samples %<>% recover_types(sampled_prices_for_stan)
+samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=3) %>% recover_types(price_set)
 ```
 
 ## Inspect Model
@@ -254,7 +266,7 @@ y_hat <- samples %>% gather_draws(log_y_hat[id]) %>%
 ```{r residuals}
 y_hat %>% 
   dplyr::select(id, .value) %>%
-  inner_join(prices_for_stan) %>% 
+  inner_join(price_set) %>% 
   mutate(
     error = .value - y
   ) %>%
@@ -274,7 +286,7 @@ y_hat %>%
 ```
 
 ```{r visualize_predictions}
-prices_for_stan %>% dplyr::select(id, y, series) %>%
+price_set %>% dplyr::select(id, y, series) %>%
   inner_join(y_hat %>% 
                group_by(id) %>%
                summarize(y_hat = mean(.value))) %>%
@@ -295,13 +307,6 @@ periodic_price_hat <- samples %>% gather_draws(log_prices_hat[period, series])
 ```
 
 ```{r time_series_by_chain}
-true_prices <- prices %>% 
-  data.frame() %>%
-  mutate_all(cumsum) %>%
-  mutate_all(exp) %>% 
-  gather(key="series", value="y_hat", -period) %>% 
-  mutate(.chain = "gen")
-
 mean_periodic_price_hat <- periodic_price_hat %>%
   group_by(period, series) %>%
   summarize(
@@ -315,15 +320,13 @@ periodic_price_hat %>%
     y_hat = exp(mean(.value))
   ) %>%
   mutate(.chain = as.character(.chain)) %>%
-  bind_rows(true_prices, mean_periodic_price_hat) %>% 
+  bind_rows(prices_gathered %>% mutate(.chain="gen") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
   mutate(alpha = case_when(
     .chain %in% c("gen", "mean_hat") ~ .8, 
     TRUE ~ .2
   )) %>%
   ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain, alpha=I(alpha))) +
   geom_line(size=0.5) +
-  #scale_y_log10() +
-  scale_y_continuous(limits=c(0, max(prices_for_stan$y))) +
   theme_minimal() +
   ggtitle("Reconstruction of Time Series By Chain")
 ```
@@ -342,7 +345,7 @@ price_forecast %>%
   ggplot(aes(x = period, y=price, group=series)) +
   stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
   scale_fill_brewer("Confidence", palette="Blues") +
-  scale_y_log10() +
+  #scale_y_log10() +
   theme_minimal()
 ```
 
@@ -387,7 +390,7 @@ bind_rows(components_by_chain, components_mean) %>%
     TRUE ~ 0.2
   )) %>%
   ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain), alpha=I(alpha))) +
-  facet_grid(series ~ .) +
+  facet_grid(series ~ ., scales="free_y") +
   geom_line(size=0.2) +
   theme_minimal() +
   ggtitle("Components of Price Movements (By Chain)")
@@ -396,13 +399,13 @@ bind_rows(components_by_chain, components_mean) %>%
 ### Visualize Coefficients
 
 ```{r visualize_coefficients}
-coefficients_hat <- samples %>% gather_draws(beta_trend[feature, series], beta_xi[feature, series], 
+coefficients_hat <- samples %>% gather_draws(beta_ar[feature, series], beta_xi[feature, series], 
                                              beta_p[feature, series], beta_q[feature, series])
 
 coefficients_hat %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=60) +
-  facet_grid(series ~ .variable + feature, scales="free") +
+  facet_grid(series ~ .variable + feature, scales="free_x") +
   theme_minimal() +
   ggtitle("Estimated Coefficients")
 ```
@@ -410,12 +413,12 @@ coefficients_hat %>%
 ### Visualize Volatilities and Intercepts
 
 ```{r visualize_volatilities}
-volatilities_hat <- samples %>% gather_draws(theta_trend[series], alpha_trend[series], theta_cycle[series], theta_season[series], omega_garch[series])
+volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[series], omega_garch[series])
 
 volatilities_hat %>% 
   ggplot(aes(x = .value)) +
   geom_histogram(bins=60) +
-  facet_grid(.variable ~ series) +
+  facet_grid(.variable ~ series, scales="free_x") +
   theme_minimal() +
   ggtitle("Estimated Volatilities and Baselines")
 ```

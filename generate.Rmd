@@ -5,7 +5,7 @@ date: "2/7/2019"
 output: html_document
 params:
   N: 2000
-  S: 10
+  S: 5
   P: 100
   F: 2
   periods_to_predict: 15
@@ -14,6 +14,7 @@ params:
   ar: 2
   s: 6
   nu: 3
+  period_scale: 52
   slab_scale: 1
   m0: .05
 ---
@@ -33,6 +34,7 @@ library(purrr)
 library(rethinking)
 library(MASS)
 library(tidyr)
+library(stringr)
 ```
 
 ## Generate Price Series
@@ -42,10 +44,10 @@ set.seed(1974)
 ```
 
 ```{r trends}
-theta_trend <- abs(rcauchy(params$S, 0, .01))
+theta_trend <- abs(rcauchy(params$S, 0, 1)) / params$period_scale
 omega_trend <- rlkjcorr(1, params$S)
-alpha_trend <- abs(rnorm(params$S, 0, .01))
-beta_trend <- pmin(abs(matrix(rnorm(params$S * params$ar, sd=0.05),  ncol=params$S)), .3) 
+alpha_trend <- abs(rnorm(params$S, 0, 1)) / params$period_scale
+beta_trend <- pmin(abs(matrix(rnorm(params$S * params$ar, sd=0.1),  ncol=params$S)), .3) 
 L_omega_trend <- t(chol(omega_trend))
 L_Omega_trend <- crossprod(diag(theta_trend), L_omega_trend)
 Omega_trend <- tcrossprod(L_Omega_trend)
@@ -84,7 +86,7 @@ delta %>% data.frame() %>%
 ```
 
 ```{r seasonality}
-theta_season <- abs(rcauchy(params$S, scale=.05))
+theta_season <- abs(rcauchy(params$S, scale=1)) / params$period_scale
 w <- matrix(rnorm(params$S * params$P, sd=theta_season^2), byrow=T, ncol=params$S)
 tau <- list()
 
@@ -113,7 +115,7 @@ tau %>% data.frame() %>%
 ```{r cyclicality}
 lambda <- runif(params$S, 0, pi)
 rho <- runif(params$S, 0, 1)
-theta_cycle <- abs(rcauchy(params$S, 0, 0.01))
+theta_cycle <- abs(rcauchy(params$S, 0, 1)) / params$period_scale
 kappa <- matrix(rnorm(params$S * params$P, sd = theta_cycle), byrow = T, ncol=params$S)
 kappa_star <- matrix(rnorm(params$S * params$P, sd = theta_cycle), byrow = T, ncol=params$S)
 
@@ -146,7 +148,7 @@ omega %>% data.frame() %>%
 ```
 
 ```{r innovations}
-theta_epsilon <- abs(rcauchy(params$S, 0, .05))
+theta_epsilon <- abs(rcauchy(params$S, 0, 1)) / params$period_scale
 omega_epsilon <- rlkjcorr(1, params$S)
 L_omega_epsilon <- t(chol(omega_epsilon))
 L_Omega_epsilon <- crossprod(diag(theta_epsilon), L_omega_epsilon)
@@ -221,12 +223,12 @@ stan_data <- compose_data(prices_for_stan %>% dplyr::select(-id),
                           p = params$p, 
                           q = params$q, 
                           ar = params$ar, 
-                          period_scale = 52, 
+                          period_scale = params$period_scale, 
                           s = rep(params$s, params$S),
                           # Parameters controlling hierarchical shrinkage
                           nu = params$nu, 
                           m0 = params$m0,
-                          slab_scale_trend = params$slab_scale,
+                          slab_scale_ar = params$slab_scale,
                           slab_scale_p = params$slab_scale, 
                           slab_scale_q = params$slab_scale,
                           slab_scale_xi = params$slab_scale,
@@ -239,7 +241,7 @@ model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=2,
+samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=4,
                     control=list(adapt_delta=0.95)
                    ) %>% recover_types(prices_for_stan)
 ```
@@ -446,6 +448,20 @@ innovation_corr_hat %>%
   facet_grid(series1 ~ series2) +
   theme_minimal() + 
   ggtitle("Innovation Correlations")
+```
+
+### Visualize Shrinkage Parameters
+
+```{r recover_shrinkage_parameters}
+shrinkage_hat <- samples %>% gather_draws(beta_ar_hs[feature, series], beta_p_hs[feature, series], beta_q_hs[feature, series], beta_xi_hs[feature, series]) 
+
+shrinkage_hat %>% 
+  ungroup() %>%
+  mutate(.variable = str_replace(.variable, "_hs", "")) %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=60) +
+  facet_grid(.variable + feature ~ series, scales ="free") +
+  theme_minimal()
 ```
 
 # DONE

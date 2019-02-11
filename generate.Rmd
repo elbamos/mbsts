@@ -6,9 +6,10 @@ output: html_document
 params:
   N: 2000
   S: 5
-  P: 100
+  P: 104
   F: 2
   periods_to_predict: 15
+  period_scale: 52
   p: 2
   q: 2
   ar: 2
@@ -93,7 +94,7 @@ tau <- list()
 for (t in 1:params$P) {
   if (t < params$s) tau <- c(tau, list(w[t, ]))
   else {
-    prior_tau <- do.call(rbind, tau[max(1, t - params$s):(t-1)])
+    prior_tau <- do.call(rbind, tau[(t - params$s + 1):(t-1)])
     tau <- c(tau, list(-colSums(prior_tau) + w[t, ]))
   }
 }
@@ -114,7 +115,7 @@ tau %>% data.frame() %>%
 ```{r cyclicality}
 lambda <- runif(params$S, 0, pi)
 rho <- runif(params$S, 0, 1)
-theta_cycle <- abs(rcauchy(params$S, 0, 1)) / params$period_scale
+theta_cycle <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
 kappa <- matrix(rnorm(params$S * params$P, sd = theta_cycle), byrow = T, ncol=params$S)
 kappa_star <- matrix(rnorm(params$S * params$P, sd = theta_cycle), byrow = T, ncol=params$S)
 
@@ -147,7 +148,7 @@ omega %>% data.frame() %>%
 ```
 
 ```{r innovations}
-theta_epsilon <- abs(rcauchy(params$S, 0, 1)) / params$period_scale
+theta_epsilon <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
 omega_epsilon <- rlkjcorr(1, params$S)
 L_omega_epsilon <- t(chol(omega_epsilon))
 L_Omega_epsilon <- crossprod(diag(theta_epsilon), L_omega_epsilon)
@@ -189,13 +190,35 @@ prices %>%
 
 ## Make Model And Simulate
 
+```{r assemble_stan_data_function}
+assemble_stan_data <- function(prices, predictors, future_predictors) compose_data(prices, 
+                          x=predictors, 
+                          x_predictive = future_predictors,
+                          N_periods = max(prices$period),
+                          N_features = ncol(predictors),
+                          periods_to_predict = params$periods_to_predict, 
+                          p = params$p, 
+                          q = params$q, 
+                          ar = params$ar, 
+                          period_scale = params$period_scale, 
+                          s = params$s,
+                          # Parameters controlling hierarchical shrinkage
+                          nu = params$nu, 
+                          m0 = params$m0,
+                          slab_scale_ar = params$slab_scale,
+                          slab_scale_p = params$slab_scale, 
+                          slab_scale_q = params$slab_scale,
+                          slab_scale_xi = params$slab_scale,
+                          .n_name = n_prefix("N"))
+```
+
 ```{r make_stan_data}
 prices_gathered <- prices %>%
   gather(key="series", value="log_price", -period) %>%
   mutate(price = exp(log_price) - 1) %>%
   dplyr::select(-log_price)
 
-prices_for_stan <- data.frame(
+sampled_prices_for_stan <- data.frame(
   period = sample(params$P, params$N, replace=T), 
   series = sample(unique(prices_gathered$series), params$N, replace=T)
 ) %>% 
@@ -212,26 +235,23 @@ prices_for_stan <- data.frame(
 predictors <- matrix(rnorm(params$P * params$F), ncol=params$F)
 future_predictors <- matrix(rnorm(params$periods_to_predict * params$F), ncol=params$F)
 
-stan_data <- compose_data(prices_for_stan %>% dplyr::select(-id), 
-                          x=predictors, 
-                          x_predictive = future_predictors,
-                          N_periods = max(prices_for_stan$period),
-                          N_features = ncol(predictors),
-                          # Parameters controlling the model
-                          periods_to_predict = params$periods_to_predict, 
-                          p = params$p, 
-                          q = params$q, 
-                          ar = params$ar, 
-                          period_scale = params$period_scale, 
-                          s = rep(params$s, params$S),
-                          # Parameters controlling hierarchical shrinkage
-                          nu = params$nu, 
-                          m0 = params$m0,
-                          slab_scale_ar = params$slab_scale,
-                          slab_scale_p = params$slab_scale, 
-                          slab_scale_q = params$slab_scale,
-                          slab_scale_xi = params$slab_scale,
-                          .n_name = n_prefix("N"))
+sampled_stan_data <- assemble_stan_data(dplyr::select(sampled_prices_for_stan, -id), predictors, future_predictors)
+
+exact_stan_data <- prices_gathered %>% rename(y=price) %>% mutate(weight = 1) %>% assemble_stan_data(predictors, future_predictors)
+
+prices_gathered %<>% mutate(id = 1:n()) %>% rename(y=price)
+```
+
+```{r select_price_set}
+exact <- T
+
+if (exact) {
+  stan_data <<- exact_stan_data
+  price_set <<- prices_gathered
+} else {
+  stan_data <<- sampled_stan_data
+  price_set <<- sampled_prices_for_stan 
+}
 ```
 
 
@@ -240,9 +260,8 @@ model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=4,
-                    control=list(adapt_delta=0.95)
-                   ) %>% recover_types(prices_for_stan)
+samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=3,
+                    control=list(adapt_delta=0.95)) %>% recover_types(price_set)
 ```
 
 ## Inspect Model
@@ -257,7 +276,7 @@ y_hat <- samples %>% gather_draws(log_y_hat[id]) %>%
 ```{r residuals}
 y_hat %>% 
   dplyr::select(id, .value) %>%
-  inner_join(prices_for_stan) %>% 
+  inner_join(price_set) %>% 
   mutate(
     error = .value - y
   ) %>%
@@ -278,7 +297,7 @@ y_hat %>%
 ```
 
 ```{r visualize_predictions}
-prices_for_stan %>% dplyr::select(id, y, series) %>%
+price_set %>% dplyr::select(id, y, series) %>%
   inner_join(y_hat %>% 
                group_by(id) %>%
                summarize(y_hat = mean(.value))) %>%
@@ -295,43 +314,30 @@ prices_for_stan %>% dplyr::select(id, y, series) %>%
 ### Visualize Time Series
 
 ```{r recover_time_series}
-weekly_price_hat <- samples %>% gather_draws(log_prices_hat[week, series])
+periodic_price_hat <- samples %>% gather_draws(log_prices_hat[period, series])
 ```
 
 ```{r time_series_by_chain}
-true_prices <- log_prices %>% 
-  data.frame() %>%
-  mutate_all(cumsum) %>%
-  mutate_all(exp) %>% 
-  set_colnames(paste("series", 1:params$S, sep="_")) %>%
-  mutate(week = 1:n()) %>%
-  dplyr::filter(week != 1) %>%
-  mutate(week = week - 1) %>%
-  gather(key="series", value="y_hat", -week) %>% 
-  mutate(.chain = "gen")
-
-mean_weekly_price_hat <- weekly_price_hat %>%
-  group_by(week, series) %>%
+mean_periodic_price_hat <- periodic_price_hat %>%
+  group_by(period, series) %>%
   summarize(
     y_hat = exp(mean(.value))
   ) %>%
   mutate(.chain = as.character("mean_hat"))
 
-weekly_price_hat %>%
-  group_by(week, series, .chain) %>%
+periodic_price_hat %>%
+  group_by(period, series, .chain) %>%
   summarize(
     y_hat = exp(mean(.value))
   ) %>%
   mutate(.chain = as.character(.chain)) %>%
-  bind_rows(true_prices, mean_weekly_price_hat) %>% 
+  bind_rows(prices_gathered %>% mutate(.chain="gen") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
   mutate(alpha = case_when(
     .chain %in% c("gen", "mean_hat") ~ .8, 
     TRUE ~ .2
   )) %>%
-  ggplot(aes(x = week, y = y_hat, color=series, linetype=.chain, alpha=I(alpha))) +
+  ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain, alpha=I(alpha))) +
   geom_line(size=0.5) +
-  #scale_y_log10() +
-  scale_y_continuous(limits=c(0, max(prices_for_stan$y))) +
   theme_minimal() +
   ggtitle("Reconstruction of Time Series By Chain")
 ```
@@ -340,17 +346,17 @@ weekly_price_hat %>%
 
 ```{r gather_price_forecast}
 price_forecast <- samples %>% 
-  gather_draws(log_predicted_prices[week, series]) 
+  gather_draws(log_predicted_prices[period, series]) 
 ```
 
 ```{r visualize_price_forceast}
 price_forecast %>% 
   mutate(price = exp(.value)) %>%
   group_by(series) %>% 
-  ggplot(aes(x = week, y=price, group=series)) +
+  ggplot(aes(x = period, y=price, group=series)) +
   stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
   scale_fill_brewer("Confidence", palette="Blues") +
-  scale_y_log10() +
+  #scale_y_log10() +
   theme_minimal()
 ```
 
@@ -368,30 +374,38 @@ combined_components <- samples %>% gather_draws(delta[period, series], tau[perio
     )
   )
 
-components_by_chain <- combined_components %>%
-  ungroup() %>%
-  group_by(period, series, component, .chain) %>%
-  summarize(.value = mean(.value)) %>%
-  mutate(.chain = as.character(.chain))
-
 components_mean <- combined_components %>%
   ungroup() %>%
   group_by(period, series, component) %>%
   summarize(.value = mean(.value)) %>% 
   mutate(.chain = "mean_hat")
 
-bind_rows(components_by_chain, components_mean) 
 components_mean %>%
+  ggplot(aes(x = period, y = .value, color=component)) +
+  facet_grid(series ~ ., scales="free_y") +
+  geom_line(size=0.2) +
+  theme_minimal() +
+  ggtitle("Components of Price Movements (Means)")
+```
+
+```{r view_components_by_chain}
+components_by_chain <- combined_components %>%
+  ungroup() %>%
+  group_by(period, series, component, .chain) %>%
+  summarize(.value = mean(.value)) %>%
+  mutate(.chain = as.character(.chain))
+
+bind_rows(components_by_chain, components_mean) %>%
   mutate(alpha = case_when(
     .chain == "mean_hat" ~ 1, 
     TRUE ~ 0.2
   )) %>%
   ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain), alpha=I(alpha))) +
-  facet_grid(series ~ ., scales = "free_y") +
+  facet_grid(series ~ ., scales="free_y") +
   geom_line(size=0.2) +
   #scale_x_continuous(limits=c(0, 80)) +
   theme_minimal() +
-  ggtitle("Components of Price Movements")
+  ggtitle("Components of Price Movements (By Chain)")
 ```
 
 ### Visualize Cyclicality
@@ -454,6 +468,34 @@ shrinkage_hat %>%
   geom_histogram(bins=60) +
   facet_grid(.variable + feature ~ series, scales ="free") +
   theme_minimal()
+```
+
+
+### Visualize Coefficients
+
+```{r visualize_coefficients}
+coefficients_hat <- samples %>% gather_draws(beta_ar[feature, series], beta_xi[feature, series], 
+                                             beta_p[feature, series], beta_q[feature, series])
+
+coefficients_hat %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=60) +
+  facet_grid(series ~ .variable + feature, scales="free_x") +
+  theme_minimal() +
+  ggtitle("Estimated Coefficients")
+```
+
+### Visualize Volatilities and Intercepts
+
+```{r visualize_volatilities}
+volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[series], omega_garch[series])
+
+volatilities_hat %>% 
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=60) +
+  facet_grid(.variable ~ series, scales="free_x") +
+  theme_minimal() +
+  ggtitle("Estimated Volatilities and Baselines")
 ```
 
 # DONE

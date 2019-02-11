@@ -91,8 +91,7 @@ w <- matrix(rnorm(params$S * params$P, sd=theta_season^2), byrow=T, ncol=params$
 tau <- list()
 
 for (t in 1:params$P) {
-  if (t == 1) tau <- c(tau, list(-w[t, ]))
-  else if (t == 2) tau <- c(tau, list(-tau[[1]] + w[t, ]))
+  if (t < params$s) tau <- c(tau, list(w[t, ]))
   else {
     prior_tau <- do.call(rbind, tau[max(1, t - params$s):(t-1)])
     tau <- c(tau, list(-colSums(prior_tau) + w[t, ]))

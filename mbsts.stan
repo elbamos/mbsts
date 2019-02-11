@@ -22,7 +22,7 @@ data {
   int<lower=1> ar; // AR period for the trend
   int<lower=1> p; // GARCH
   int<lower=1> q; // GARCH
-  int<lower=1> s[N_series]; // seasonality periods
+  int<lower=1> s; // seasonality 
   real<lower=1> period_scale; 
   
   // Data 
@@ -110,10 +110,14 @@ transformed parameters {
 
   // ----- SEASONALITY ------
   tau[1] = w_t[1];
-  for (t in 2:(N_periods-1)) {
+  for (t in 1:(s-1)) {
+    tau[t] = w_t[t];
+  }
+  for (t in s:(N_periods-1)) {
+    matrix[s - 1, N_series] past_seasonality = block(tau, t - s + 1, 1, s-1, N_series);
+    
     for (d in 1:N_series) {
-      if (t < s[d]) tau[t, d] = 0;
-      else tau[t, d] = -sum(sub_col(tau, t - s[d] + 1, d, s[d] - 1));
+      tau[t, d] = -sum(col(past_seasonality, d));
     }
     tau[t] += w_t[t];
   }
@@ -248,16 +252,23 @@ generated quantities {
   
   // SEASONALITY
   for (t in 1:(periods_to_predict)) {
-    for (d in 1:N_series) {
-      if (t < s[d]) {
-        tau_hat[t, d] = -sum(append_row(
-          sub_col(tau_hat, 1, d, t - 1), 
-          sub_col(tau, N_periods - 1 - (s[d] - t), d, s[d] - t)
-        )) + w_t_hat[t, d];
-      } else {
-        tau_hat[t, d] = -sum(sub_col(tau_hat, t - s[d] + 1, d, s[d] - 1)) + w_t_hat[t, d];
-      }
+    matrix[s - 1, N_series] prior_tau;
+    
+    if (t == 1) {
+      prior_tau = block(tau, N_periods - s + 1, 1, s - 1, N_series);
+    } else if (t < s) {
+      prior_tau = append_row(
+        block(tau_hat, 1, 1, t-1, N_series), 
+        block(tau, N_periods - 1 - (s - 1 - (t-1)), 1, s - 1 - (t-1), N_series)
+      );
+    } else {
+      prior_tau = block(tau_hat, t - s + 1, 1, s - 1, N_series); 
     }
+    
+    for (d in 1:N_series) {
+      tau_hat[t, d] = -sum(col(prior_tau, d));
+    }
+    tau_hat[t] += w_t_hat[t]; 
   }
   
   // Cyclicality

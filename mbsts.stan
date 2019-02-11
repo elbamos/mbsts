@@ -109,14 +109,15 @@ transformed parameters {
   }
 
   // ----- SEASONALITY ------
-  tau[1] = -w_t[1];
+  tau[1] = w_t[1];
   for (t in 2:(N_periods-1)) {
     for (d in 1:N_series) {
-      tau[t, d] = -sum(sub_col(tau, max(1, t - 1 - s[d] - 1), d, min(s[d] - 1, t - 1)));
+      if (t < s[d]) tau[t, d] = 0;
+      else tau[t, d] = -sum(sub_col(tau, t - s[d] + 1, d, s[d] - 1));
     }
     tau[t] += w_t[t];
   }
-  
+    
   // ----- CYCLICALITY ------
   omega[1] = kappa[1];
   omega_star[1] = kappa_star[1]; 

@@ -357,16 +357,7 @@ price_forecast %>%
 ### Visualize Period Components
 
 ```{r recover_components}
-trend_hat <- samples %>% gather_draws(delta[week, series])
-seasonality_hat <- samples %>% gather_draws(tau[week, series])
-cyclicality_hat <- samples %>% gather_draws(omega[week, series])
-innovations_hat <- samples %>% gather_draws(epsilon[week, series])
-xi_hat <- samples %>% gather_draws(xi[week, series])
-
-combined_components <- bind_rows(trend_hat, seasonality_hat, cyclicality_hat, innovations_hat, xi_hat) %>% 
-  bind_rows(trend_hat, seasonality_hat, cyclicality_hat, innovations_hat, xi_hat) %>%
-  group_by(week, series, .variable) %>%
-  summarize(.value = mean(.value)) %>% 
+combined_components <- samples %>% gather_draws(delta[period, series], tau[period, series], omega[period, series], epsilon[period, series], xi[period, series]) %>%
   mutate(
     component = case_when(
       .variable == "delta" ~ "trends", 
@@ -379,24 +370,26 @@ combined_components <- bind_rows(trend_hat, seasonality_hat, cyclicality_hat, in
 
 components_by_chain <- combined_components %>%
   ungroup() %>%
-  group_by(week, series, component, .chain) %>%
+  group_by(period, series, component, .chain) %>%
   summarize(.value = mean(.value)) %>%
   mutate(.chain = as.character(.chain))
 
 components_mean <- combined_components %>%
   ungroup() %>%
-  group_by(week, series, component) %>%
+  group_by(period, series, component) %>%
   summarize(.value = mean(.value)) %>% 
   mutate(.chain = "mean_hat")
 
-bind_rows(components_by_chain, components_mean) %>%
+bind_rows(components_by_chain, components_mean) 
+components_mean %>%
   mutate(alpha = case_when(
     .chain == "mean_hat" ~ 1, 
     TRUE ~ 0.2
   )) %>%
-  ggplot(aes(x = week, y = .value, color=component, linetype=factor(.chain), alpha=I(alpha))) +
-  facet_grid(series ~ .) +
+  ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain), alpha=I(alpha))) +
+  facet_grid(series ~ ., scales = "free_y") +
   geom_line(size=0.2) +
+  #scale_x_continuous(limits=c(0, 80)) +
   theme_minimal() +
   ggtitle("Components of Price Movements")
 ```

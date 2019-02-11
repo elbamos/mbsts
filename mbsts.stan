@@ -71,7 +71,7 @@ data {
   int<lower=1> ar; // AR period for the trend
   int<lower=1> p; // GARCH
   int<lower=1> q; // GARCH
-  int<lower=1> s[N_series]; // seasonality periods
+  int<lower=1> s; // seasonality 
   real<lower=1> period_scale; 
   
   // Parameeters controlling sparse feature selection
@@ -194,10 +194,13 @@ transformed parameters {
 
   // ----- SEASONALITY ------
   tau[1] = w_t[1];
-  for (t in 2:(N_periods-1)) {
+  for (t in 1:(s-1)) {
+    tau[t] = w_t[t];
+  }
+  for (t in s:(N_periods-1)) {
+    matrix[s - 1, N_series] past_seasonality = block(tau, t - s + 1, 1, t-1, N_series);
     for (d in 1:N_series) {
-      if (t < s[d]) tau[t, d] = 0;
-      else tau[t, d] = -sum(sub_col(tau, t - s[d] + 1, d, s[d] - 1));
+      tau[t, d] = -sum(col(tau, d));
     }
     tau[t] += w_t[t];
   }

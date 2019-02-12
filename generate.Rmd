@@ -190,7 +190,7 @@ prices %>%
 ## Make Model And Simulate
 
 ```{r assemble_stan_data_function}
-assemble_stan_data <- function(prices, predictors, future_predictors) compose_data(prices, 
+assemble_stan_data <- function(prices, predictors, future_predictors, seasonality) compose_data(prices, 
                           x=predictors, 
                           x_predictive = future_predictors,
                           N_periods = max(prices$period),
@@ -200,7 +200,6 @@ assemble_stan_data <- function(prices, predictors, future_predictors) compose_da
                           q = params$q, 
                           ar = params$ar, 
                           period_scale = params$period_scale, 
-                          s = params$s,
                           # Parameters controlling hierarchical shrinkage
                           nu = params$nu, 
                           m0 = params$m0,
@@ -208,6 +207,7 @@ assemble_stan_data <- function(prices, predictors, future_predictors) compose_da
                           slab_scale_p = params$slab_scale, 
                           slab_scale_q = params$slab_scale,
                           slab_scale_xi = params$slab_scale,
+                          seasonality,
                           .n_name = n_prefix("N"))
 ```
 
@@ -231,12 +231,17 @@ sampled_prices_for_stan <- data.frame(
     id = 1:n()
   )
 
+seasonality <- list(
+  s = c(4, 12),
+  N_seasonality = 2
+)
+
 predictors <- matrix(rnorm(params$P * params$F), ncol=params$F)
 future_predictors <- matrix(rnorm(params$periods_to_predict * params$F), ncol=params$F)
 
-sampled_stan_data <- assemble_stan_data(dplyr::select(sampled_prices_for_stan, -id), predictors, future_predictors)
+sampled_stan_data <- assemble_stan_data(dplyr::select(sampled_prices_for_stan, -id), predictors, future_predictors, seasonality)
 
-exact_stan_data <- prices_gathered %>% rename(y=price) %>% mutate(weight = 1) %>% assemble_stan_data(predictors, future_predictors)
+exact_stan_data <- prices_gathered %>% rename(y=price) %>% mutate(weight = 1) %>% assemble_stan_data(predictors, future_predictors, seasonality)
 
 prices_gathered %<>% mutate(id = 1:n()) %>% rename(y=price)
 ```
@@ -260,7 +265,8 @@ model <- stan_model("./mbsts.stan")
 
 ```{r sample}
 samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2,
-                    control=list(adapt_delta=0.95)) %>% recover_types(price_set)
+                    control=list(adapt_delta=0.95)
+                    ) %>% recover_types(price_set)
 ```
 
 ## Inspect Model
@@ -362,12 +368,12 @@ price_forecast %>%
 ### Visualize Period Components
 
 ```{r recover_components}
-combined_components <- samples %>% gather_draws(delta[period, series], tau[period, series], omega[period, series], epsilon[period, series], xi[period, series]) %>%
+combined_components <- samples %>%  gather_draws(delta[period, series], tau_s[seasonality][period, series], omega[period, series], epsilon[period, series], xi[period, series])  %>% 
   mutate(
     component = case_when(
       .variable == "delta" ~ "trends", 
       .variable == "epsilon" ~ "innovations", 
-      .variable == "tau" ~ "seasonality", 
+      .variable == "tau_s" ~ paste("seasonality", seasonality, sep="_"), 
       .variable == "omega" ~ "cyclicality", 
       .variable == "xi" ~ "predictors"
     )
@@ -504,12 +510,19 @@ coefficients_hat %>%
 ### Visualize Volatilities and Intercepts
 
 ```{r visualize_volatilities}
-volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[series], omega_garch[series])
+volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[seasonality][series], omega_garch[series]) %>%
+  ungroup() %>% 
+  mutate(
+    component = case_when(
+      .variable == "theta_season" ~ paste("theta_season", seasonality, sep="_"),
+      TRUE ~ .variable
+    )
+  )
 
 volatilities_hat %>% 
   ggplot(aes(x = .value)) +
   geom_histogram(bins=60) +
-  facet_grid(.variable ~ series, scales="free_x") +
+  facet_grid(component ~ series, scales="free_x") +
   theme_minimal() +
   ggtitle("Estimated Volatilities and Baselines")
 ```

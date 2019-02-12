@@ -197,7 +197,8 @@ assemble_stan_data <- function(prices, predictors, future_predictors) compose_da
                           q = params$q, 
                           ar = params$ar, 
                           period_scale = params$period_scale, 
-                          s = params$s,
+                          s = as.integer(c(4, 12)),
+                          N_seasonality=2,
                           .n_name = n_prefix("N"))
 ```
 
@@ -251,7 +252,7 @@ model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=3) %>% recover_types(price_set)
+samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2) %>% recover_types(price_set)
 ```
 
 ## Inspect Model
@@ -295,7 +296,7 @@ price_set %>% dplyr::select(id, y, series) %>%
   facet_wrap(~ series) +
   scale_x_continuous(limits=c(0, NA)) + 
   scale_y_continuous(limits=c(0, NA)) + 
-  annotate("segment", x = 0, y = 0, xend=max(prices_for_stan$y), yend=max(prices_for_stan$y), color="red", size=0.5, alpha=0.5) +
+  annotate("segment", x = 0, y = 0, xend=max(price_set$y), yend=max(price_set$y), color="red", size=0.5, alpha=0.5) +
   theme_minimal() + 
   ggtitle("Prices vs. Mean Predictions")
 ```
@@ -352,12 +353,12 @@ price_forecast %>%
 ### Visualize Period Components
 
 ```{r recover_components}
-combined_components <- samples %>%  gather_draws(delta[period, series], tau[period, series], omega[period, series], epsilon[period, series], xi[period, series])  %>% 
+combined_components <- samples %>%  gather_draws(delta[period, series], tau_s[seasonality][period, series], omega[period, series], epsilon[period, series], xi[period, series])  %>% 
   mutate(
     component = case_when(
       .variable == "delta" ~ "trends", 
       .variable == "epsilon" ~ "innovations", 
-      .variable == "tau" ~ "seasonality", 
+      .variable == "tau_s" ~ paste("seasonality", seasonality, sep="_"), 
       .variable == "omega" ~ "cyclicality", 
       .variable == "xi" ~ "predictors"
     )
@@ -413,12 +414,19 @@ coefficients_hat %>%
 ### Visualize Volatilities and Intercepts
 
 ```{r visualize_volatilities}
-volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[series], omega_garch[series])
+volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[seasonality][series], omega_garch[series]) %>%
+  ungroup() %>% 
+  mutate(
+    component = case_when(
+      .variable == "theta_season" ~ paste("theta_season", seasonality, sep="_"),
+      TRUE ~ .variable
+    )
+  )
 
 volatilities_hat %>% 
   ggplot(aes(x = .value)) +
   geom_histogram(bins=60) +
-  facet_grid(.variable ~ series, scales="free_x") +
+  facet_grid(component ~ series, scales="free_x") +
   theme_minimal() +
   ggtitle("Estimated Volatilities and Baselines")
 ```

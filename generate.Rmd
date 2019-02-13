@@ -196,6 +196,7 @@ assemble_stan_data <- function(prices, predictors, future_predictors, seasonalit
                           N_periods = max(prices$period),
                           N_features = ncol(predictors),
                           periods_to_predict = params$periods_to_predict, 
+                          # parameters controlling the model 
                           p = params$p, 
                           q = params$q, 
                           ar = params$ar, 
@@ -203,10 +204,6 @@ assemble_stan_data <- function(prices, predictors, future_predictors, seasonalit
                           # Parameters controlling hierarchical shrinkage
                           nu = params$nu, 
                           m0 = params$m0,
-                          slab_scale_ar = params$slab_scale,
-                          slab_scale_p = params$slab_scale, 
-                          slab_scale_q = params$slab_scale,
-                          slab_scale_xi = params$slab_scale,
                           seasonality,
                           .n_name = n_prefix("N"))
 ```
@@ -265,7 +262,7 @@ model <- stan_model("./mbsts.stan")
 
 ```{r sample}
 samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2,
-                    control=list(adapt_delta=0.95)
+                   # control=list(adapt_delta=0.95, max_treedepth=15)
                     ) %>% recover_types(price_set)
 ```
 
@@ -361,7 +358,7 @@ price_forecast %>%
   ggplot(aes(x = period, y=price, group=series)) +
   stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
   scale_fill_brewer("Confidence", palette="Blues") +
-  scale_y_log10() +
+  #scale_y_log10() +
   theme_minimal()
 ```
 
@@ -522,7 +519,7 @@ volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series],
 volatilities_hat %>% 
   ggplot(aes(x = .value)) +
   geom_histogram(bins=60) +
-  facet_grid(component ~ series, scales="free_x") +
+  facet_grid(series ~ component, scales="free") +
   theme_minimal() +
   ggtitle("Estimated Volatilities and Baselines")
 ```

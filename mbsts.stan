@@ -30,9 +30,9 @@ functions {
   }
   
   // Sparsity
-  void hs_prior_lp(vector param, real tau, vector lambda_m, real c2_tilde, real nu) {
+  void hs_prior_lp(vector param, real tau, vector lambda_m, real c2_tilde, real slab_scale, real nu) {
     tau ~ cauchy(0, 1);
-    c2_tilde ~ inv_gamma(nu/2, nu / 2);
+    c2_tilde ~ inv_gamma(nu/2.0, square(slab_scale) * nu / 2.0);
     lambda_m ~ cauchy(0, 1);
     param ~ normal(0, 1);
   }
@@ -45,19 +45,17 @@ functions {
     return (m0 / (M - m0)) * (1 / sqrt(1.0 * N));
   }
   
-  matrix apply_hs_prior_m(matrix param_raw, real tau0_start, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
+  matrix apply_hs_prior_m(matrix param_raw, real tau0_start, real sigma, real tau, vector lambda_m, real c2) {
     int M = num_elements(param_raw);
     real tau0tau = tau0_start * sigma * tau;
-    real c2 = c2_tilde * slab_scale;
     vector[M] lambda_m_square = square(lambda_m);
     vector[M] lambda_m_tilde = sqrt(c2 * lambda_m_square ./ (c2 + square(tau0tau) * lambda_m_square));
     return tau0tau * to_matrix(lambda_m_tilde, rows(param_raw), cols(param_raw)) .* param_raw;
   }
   
-  vector apply_hs_prior_v(vector param_raw, real tau0_start, real sigma, real slab_scale, real tau, vector lambda_m, real c2_tilde) {
+  vector apply_hs_prior_v(vector param_raw, real tau0_start, real sigma, real tau, vector lambda_m, real c2) {
     int M = num_elements(param_raw);
     real tau0tau = tau0_start * sigma * tau;
-    real c2 = c2_tilde * slab_scale;
     vector[M] lambda_m_square = square(lambda_m);
     vector[M] lambda_m_tilde = sqrt(c2 * lambda_m_square ./ (c2 + square(tau0tau) * lambda_m_square));
     return tau0tau * lambda_m_tilde .* param_raw;
@@ -77,15 +75,12 @@ data {
   int<lower=1> q; // GARCH
   int<lower=1> N_seasonality;
   int<lower=1> s[N_seasonality]; // seasonality 
+  // A prior on the scale of each factor; a reasonable estimate the number of periods over which a price could reasonably double
   real<lower=1> period_scale; 
   
   // Parameeters controlling sparse feature selection
   real<lower=0,upper=1>              m0; // Sparsity target; proportion of features we expect to be relevant
   int<lower=1>                       nu; // nu parameters for horseshoe prior
-  real<lower=0>                      slab_scale_ar;
-  real<lower=0>                      slab_scale_p;
-  real<lower=0>                      slab_scale_q;
-  real<lower=0>                      slab_scale_xi;
 
   // Data 
   vector<lower=0>[N]                         y;
@@ -185,10 +180,10 @@ transformed parameters {
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
   // Hierarchical shrinkage
-  matrix[ar, N_series] beta_ar_hs = apply_hs_prior_m(beta_ar, tau0_ar, sigma_y, slab_scale_ar, tau_beta_ar, lambda_m_beta_ar, c_beta_ar); 
-  matrix[ar, N_series] beta_p_hs = apply_hs_prior_m(beta_p, tau0_beta_p, sigma_y, slab_scale_p, tau_beta_p, lambda_m_beta_p, c_beta_p); 
-  matrix[ar, N_series] beta_q_hs = apply_hs_prior_m(beta_q, tau0_beta_q, sigma_y, slab_scale_q, tau_beta_q, lambda_m_beta_q, c_beta_q); 
-  matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, slab_scale_xi, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
+  matrix[ar, N_series] beta_ar_hs = apply_hs_prior_m(beta_ar, tau0_ar, sigma_y, tau_beta_ar, lambda_m_beta_ar, c_beta_ar); 
+  matrix[ar, N_series] beta_p_hs = apply_hs_prior_m(beta_p, tau0_beta_p, sigma_y, tau_beta_p, lambda_m_beta_p, c_beta_p); 
+  matrix[ar, N_series] beta_q_hs = apply_hs_prior_m(beta_q, tau0_beta_q, sigma_y, tau_beta_q, lambda_m_beta_q, c_beta_q); 
+  matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
   // Retain calculation of xi
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; // Predictors
 
@@ -281,7 +276,7 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
-  hs_prior_lp(to_vector(beta_ar), tau_beta_ar, lambda_m_beta_ar, c_beta_ar, nu);
+  hs_prior_lp(to_vector(beta_ar), tau_beta_ar, lambda_m_beta_ar, c_beta_ar, inv_period_scale, nu);
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
   L_omega_ar ~ lkj_corr_cholesky(1);
 
@@ -296,12 +291,12 @@ model {
   theta_cycle ~ cauchy(0, inv_period_scale);
 
   // REGRESSION
-  hs_prior_lp(to_vector(beta_xi), tau_beta_xi, lambda_m_beta_xi, c_beta_xi, nu);
+  hs_prior_lp(to_vector(beta_xi), tau_beta_xi, lambda_m_beta_xi, c_beta_xi, inv_period_scale, nu);
 
   // INNOVATIONS
   omega_garch ~ cauchy(0, inv_period_scale);
-  hs_prior_lp(to_vector(beta_p), tau_beta_p, lambda_m_beta_p, c_beta_p, nu);
-  hs_prior_lp(to_vector(beta_q), tau_beta_q, lambda_m_beta_q, c_beta_q, nu);
+  hs_prior_lp(to_vector(beta_p), tau_beta_p, lambda_m_beta_p, c_beta_p, inv_period_scale, nu);
+  hs_prior_lp(to_vector(beta_q), tau_beta_q, lambda_m_beta_q, c_beta_q, inv_period_scale, nu);
   L_omega_garch ~ lkj_corr_cholesky(1);
 
   // ----- TIME SERIES ------

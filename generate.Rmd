@@ -4,9 +4,9 @@ author: "Amos B. Elberg"
 date: "2/7/2019"
 output: html_document
 params:
-  N: 1000
+  N: 700
   S: 5
-  P: 104
+  P: 52
   F: 2
   periods_to_predict: 15
   period_scale: 52
@@ -14,6 +14,7 @@ params:
   q: 2
   ar: 2
   s: 12
+  use_sampled: F
 ---
 
 ```{r setup, include=FALSE}
@@ -37,6 +38,8 @@ library(tidyr)
 
 ```{r seed}
 set.seed(1974)
+periods_to_generate <- params$P + params$periods_to_predict
+period_vline <- data.frame(xintercept=params$P)
 ```
 
 
@@ -49,7 +52,7 @@ L_omega_trend <- t(chol(omega_trend))
 L_Omega_trend <- crossprod(diag(theta_trend), L_omega_trend)
 Omega_trend <- tcrossprod(L_Omega_trend)
 
-nu <- mvrnorm(n=params$P, rep(0, params$S), Omega_trend)
+nu <- mvrnorm(n=periods_to_generate, rep(0, params$S), Omega_trend)
 
 delta <- list(
 )
@@ -78,16 +81,17 @@ delta %>% data.frame() %>%
   gather(key="series", value="trend", -period) %>%
   ggplot(aes(x = period, y=trend, color=series)) + 
   geom_line(size=0.5, alpha=0.4) +
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
   theme_minimal() + 
   ggtitle("Generated Trends")
 ```
 
 ```{r seasonality}
 theta_season <- abs(rcauchy(params$S, scale=1)) / params$period_scale
-w <- matrix(rnorm(params$S * params$P, sd=theta_season^2), byrow=T, ncol=params$S)
+w <- matrix(rnorm(params$S * periods_to_generate, sd=theta_season^2), byrow=T, ncol=params$S)
 tau <- list()
 
-for (t in 1:params$P) {
+for (t in 1:periods_to_generate) {
   if (t < params$s) tau <- c(tau, list(w[t, ]))
   else {
     prior_tau <- do.call(rbind, tau[(t - params$s + 1):(t-1)])
@@ -103,6 +107,7 @@ tau %>% data.frame() %>%
   gather(key="series", value="seasonality", -period) %>%
   ggplot(aes(x = period, y=seasonality, color=series)) + 
   geom_line(size=0.5, alpha=0.4) +
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
   theme_minimal() + 
   ggtitle("Generated Seasonality")
 
@@ -112,8 +117,8 @@ tau %>% data.frame() %>%
 lambda <- runif(params$S, 0, pi)
 rho <- runif(params$S, 0, 1)
 theta_cycle <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
-kappa <- matrix(rnorm(params$S * params$P, sd = theta_cycle), byrow = T, ncol=params$S)
-kappa_star <- matrix(rnorm(params$S * params$P, sd = theta_cycle), byrow = T, ncol=params$S)
+kappa <- matrix(rnorm(params$S * periods_to_generate, sd = theta_cycle), byrow = T, ncol=params$S)
+kappa_star <- matrix(rnorm(params$S * periods_to_generate, sd = theta_cycle), byrow = T, ncol=params$S)
 
 omega <- list(
   kappa[1, ]
@@ -122,7 +127,7 @@ omega_star <- list(
   kappa_star[1, ]
 )
 
-for (t in 2:params$P) { 
+for (t in 2:periods_to_generate) { 
   omega <- c(omega, list(
     (rho * cos(lambda) * omega[[t-1]][[1]]) + (rho * sin(lambda) * omega_star[[t-1]][[1]]) + kappa[t, ]
   ))
@@ -139,6 +144,7 @@ omega %>% data.frame() %>%
   gather(key="series", value="cyclicality", -period) %>% 
   ggplot(aes(x = period, y=cyclicality, color=series)) + 
   geom_line(size=0.5, alpha=0.4) +
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
   theme_minimal() + 
   ggtitle("Generated Cyclicality")
 ```
@@ -150,13 +156,14 @@ L_omega_epsilon <- t(chol(omega_epsilon))
 L_Omega_epsilon <- crossprod(diag(theta_epsilon), L_omega_epsilon)
 Omega_epsilon <- tcrossprod(L_Omega_epsilon)
 
-epsilon <- mvrnorm(n=params$P, rep(0, params$S), Omega_epsilon)
+epsilon <- mvrnorm(n=periods_to_generate, rep(0, params$S), Omega_epsilon)
 
 epsilon %>% data.frame() %>%
   set_colnames(paste("series", 1:params$S, sep="_")) %>%
   mutate(period = 1:n()) %>%
   gather(key="series", value="innovation", -period) %>% 
   ggplot(aes(x = period, y=innovation, color=series)) + 
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
   geom_line(size=0.5, alpha=0.4) +
   theme_minimal() + 
   ggtitle("Generated Innovations")
@@ -178,7 +185,8 @@ prices %>%
   gather(key="series", value="log_price", -period) %>%
   mutate(price = exp(log_price) - 1) %>%
   ggplot(aes(x = period, y = price, color=series)) + 
-  geom_line(size=0.5, alpha=0.3) + 
+  geom_line(size=0.5, alpha=0.7) + 
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
   theme_minimal() + 
   ggtitle("Generated Price Series")
 ```
@@ -187,7 +195,7 @@ prices %>%
 ## Make Model And Simulate
 
 ```{r assemble_stan_data_function}
-assemble_stan_data <- function(prices, predictors, future_predictors) compose_data(prices, 
+assemble_stan_data <- function(prices, predictors, future_predictors, seasonality) compose_data(prices, 
                           x=predictors, 
                           x_predictive = future_predictors,
                           N_periods = max(prices$period),
@@ -197,8 +205,8 @@ assemble_stan_data <- function(prices, predictors, future_predictors) compose_da
                           q = params$q, 
                           ar = params$ar, 
                           period_scale = params$period_scale, 
-                          s = as.integer(c(4, 12)),
-                          N_seasonality=2,
+                          s = seasonality$s,
+                          N_seasonality = nrow(seasonality),
                           .n_name = n_prefix("N"))
 ```
 
@@ -206,7 +214,9 @@ assemble_stan_data <- function(prices, predictors, future_predictors) compose_da
 prices_gathered <- prices %>%
   gather(key="series", value="log_price", -period) %>%
   mutate(price = exp(log_price) - 1) %>%
-  dplyr::select(-log_price)
+  dplyr::select(-log_price) %>%
+  arrange(period, series) %>%
+  mutate(id = 1:n())
 
 sampled_prices_for_stan <- data.frame(
   period = sample(params$P, params$N, replace=T), 
@@ -222,18 +232,28 @@ sampled_prices_for_stan <- data.frame(
     id = 1:n()
   )
 
+seasonality <- data.frame(
+  s = c(4, 2)
+) %>% mutate(
+  seasonality = paste("seasonality", 1:n(), sep="_")
+)
+
 predictors <- matrix(rnorm(params$P * params$F), ncol=params$F)
 future_predictors <- matrix(rnorm(params$periods_to_predict * params$F), ncol=params$F)
 
-sampled_stan_data <- assemble_stan_data(dplyr::select(sampled_prices_for_stan, -id), predictors, future_predictors)
+sampled_stan_data <- assemble_stan_data(dplyr::select(sampled_prices_for_stan, -id), predictors, future_predictors, seasonality)
 
-exact_stan_data <- prices_gathered %>% rename(y=price) %>% mutate(weight = 1) %>% assemble_stan_data(predictors, future_predictors)
+exact_stan_data <- prices_gathered %>% 
+  dplyr::filter(period <= params$P) %>% 
+  rename(y=price) %>% 
+  mutate(weight = 1) %>% 
+  assemble_stan_data(predictors, future_predictors, seasonality)
 
-prices_gathered %<>% mutate(id = 1:n()) %>% rename(y=price)
+prices_gathered %<>% rename(y=price)
 ```
 
 ```{r select_price_set}
-exact <- T
+exact <- ! as.logical(params$use_sampled)
 
 if (exact) {
   stan_data <<- exact_stan_data
@@ -242,8 +262,6 @@ if (exact) {
   stan_data <<- sampled_stan_data
   price_set <<- sampled_prices_for_stan 
 }
-  
-
 ```
 
 
@@ -340,11 +358,17 @@ price_forecast <- samples %>%
 ```
 
 ```{r visualize_price_forceast}
+true_future <- prices_gathered %>%
+  dplyr::filter(period > params$P) %>%
+  mutate(period = period - params$P)
+  
+
 price_forecast %>% 
   mutate(price = exp(.value)) %>%
   group_by(series) %>% 
-  ggplot(aes(x = period, y=price, group=series)) +
+  ggplot(aes(x = period, y=price, group=series, color=series)) +
   stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
+  geom_line(data=true_future, aes(x=period, y=y, color=series)) +
   scale_fill_brewer("Confidence", palette="Blues") +
   #scale_y_log10() +
   theme_minimal()
@@ -395,6 +419,77 @@ bind_rows(components_by_chain, components_mean) %>%
   geom_line(size=0.2) +
   theme_minimal() +
   ggtitle("Components of Price Movements (By Chain)")
+```
+
+### Visualize Cyclicality
+
+```{r cyclicality}
+cylicality_hat <- samples %>% gather_draws(lambda[series], rho[series])
+```
+
+```{r view_cyclicality}
+true_cyclicality <- data.frame(
+  lambda = lambda, 
+  rho = rho, 
+  series = sort(unique(cylicality_hat$series))
+) %>%
+  gather(key=".variable", value=".value", -series)
+
+cylicality_hat %>% 
+  ggplot(aes(x = .value)) + 
+  geom_histogram(bins=60) +
+  geom_vline(data=true_cyclicality, aes(xintercept=.value), color="blue", size=0.5) +
+  facet_grid(series ~ .variable, scales="free") +
+  theme_minimal() + 
+  ggtitle("Estimates of Cycle Frequency and Damping")
+```
+
+### Visualize Trend Correlations
+
+```{r recover_return_correlations}
+trend_corr_hat <- samples %>% gather_draws(trend_corr[series1, series2])
+
+true_trends <- omega_trend %>%
+  data.frame() %>%
+  set_colnames(1:ncol(omega_trend)) %>%
+  mutate(series1 = 1:n()) %>%
+  gather(key="series2", value=".value", -series1)
+```
+
+```{r show_trend_corr}
+trend_corr_hat %>%
+  dplyr::filter(series1 != series2) %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=100) +
+  geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
+  geom_vline(data=true_trends, aes(xintercept=.value), color="blue", size=0.2) +
+  facet_grid(series1 ~ series2) +
+  theme_minimal() + 
+  ggtitle("Trend Correlations")
+```
+
+### Visualize Innovation Correlations
+
+```{r recover_innovation_correlations}
+innovation_corr_hat <- samples %>% gather_draws(innovation_corr[series1, series2])
+
+true_innovations <- omega_epsilon %>%
+  data.frame() %>%
+  set_colnames(1:ncol(omega_trend)) %>%
+  mutate(series1 = 1:n()) %>%
+  gather(key="series2", value=".value", -series1)
+```
+
+```{r show_innovation_corr}
+innovation_corr_hat %>%
+  dplyr::filter(series1 != series2) %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=100) +
+  geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
+  geom_vline(data=true_innovations, aes(xintercept=.value), color="blue", size=0.2) +
+  facet_grid(series1 ~ series2) +
+  theme_minimal() + 
+  ggtitle("Innovation Correlations")
 ```
 
 ### Visualize Coefficients

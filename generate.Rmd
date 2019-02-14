@@ -200,11 +200,10 @@ prices %>%
 # Make Model And Simulate
 
 ```{r assemble_stan_data_function}
-assemble_stan_data <- function(prices, predictors, future_predictors) compose_data(
+assemble_stan_data <- function(prices, predictors) compose_data(
                           # The data
                           prices, 
                           x=predictors, 
-                          x_predictive = future_predictors,
                           N_periods = max(prices$period),
                           N_features = ncol(predictors),
                           # Parameters controlling the model 
@@ -244,15 +243,14 @@ sampled_prices_for_stan <- data.frame(
   )
 
 predictors <- matrix(rnorm(params$P * params$F), ncol=params$F)
-future_predictors <- matrix(rnorm(params$periods_to_predict * params$F), ncol=params$F)
 
-sampled_stan_data <- assemble_stan_data(dplyr::select(sampled_prices_for_stan, -id), predictors, future_predictors)
+sampled_stan_data <- assemble_stan_data(dplyr::select(sampled_prices_for_stan, -id), predictors)
 
 exact_stan_data <- prices_gathered %>% 
   dplyr::filter(period <= params$P) %>% 
   rename(y=price) %>% 
   mutate(weight = 1) %>% 
-  assemble_stan_data(predictors, future_predictors)
+  assemble_stan_data(predictors)
 
 prices_gathered %<>% rename(y=price)
 ```

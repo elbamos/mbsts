@@ -36,8 +36,6 @@ data {
   int<lower=1,upper=N_series>                series[N];
   vector<lower=0>[N]                         weight;
   matrix[N_periods, N_features]              x; // Regression predictors
-  
-  matrix[periods_to_predict, N_features]     x_predictive;
 }
 
 transformed data {
@@ -247,7 +245,6 @@ generated quantities {
   matrix[periods_to_predict, N_series]             omega_star_hat; // Anti-cyclicality at time t
   matrix[periods_to_predict, N_series]             theta_hat; // Conditional variance of innovations 
   matrix[periods_to_predict, N_series]             epsilon_hat; 
-  matrix[periods_to_predict, N_series]             xi_hat = x_predictive * beta_xi;
   matrix[periods_to_predict, N_series]             nu_ar_hat; 
   matrix[periods_to_predict, N_series]             kappa_hat;
   matrix[periods_to_predict, N_series]             kappa_star_hat; 
@@ -358,9 +355,9 @@ generated quantities {
     epsilon_hat[t] = multi_normal_cholesky_rng(zero_vector', make_L(theta_hat[t], L_omega_garch))';
   }
   
-  log_predicted_prices[1] = log_prices_hat[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1] + xi_hat[1] + epsilon_hat[1];
+  log_predicted_prices[1] = log_prices_hat[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1] + epsilon_hat[1];
   for (t in 2:periods_to_predict) {
-    log_predicted_prices[t] = log_predicted_prices[t-1] + delta_hat[t] + tau_hat_all[t] + omega_hat[t] + xi_hat[t] + epsilon_hat[t];
+    log_predicted_prices[t] = log_predicted_prices[t-1] + delta_hat[t] + tau_hat_all[t] + omega_hat[t] + epsilon_hat[t];
   }
 }
 

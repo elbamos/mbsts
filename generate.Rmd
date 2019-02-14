@@ -91,9 +91,9 @@ w <- matrix(rnorm(params$S * periods_to_generate, sd=theta_season^2), byrow=T, n
 tau <- list()
 
 for (t in 1:periods_to_generate) {
-  if (t < params$s) tau <- c(tau, list(w[t, ]))
+  if (t < params$s[1]) tau <- c(tau, list(w[t, ]))
   else {
-    prior_tau <- do.call(rbind, tau[(t - params$s + 1):(t-1)])
+    prior_tau <- do.call(rbind, tau[(t - params$s[1] + 1):(t-1)])
     tau <- c(tau, list(-colSums(prior_tau) + w[t, ]))
   }
 }
@@ -158,7 +158,7 @@ omega_epsilon <- rlkjcorr(1, params$S)
 beta_p <- abs(rnorm(params$S, sd=0.2))
 beta_q <- abs(rnorm(params$S, sd=0.2))
 
-garchout <- eccc.sim(periods_to_generate, theta_epsilon, A=diag(beta_p), B=diag(beta_q), 
+garchout <- ccgarch::eccc.sim(periods_to_generate, theta_epsilon, A=diag(beta_p), B=diag(beta_q), 
                      R=omega_epsilon, model="diagonal")
 
 epsilon <- garchout$eps

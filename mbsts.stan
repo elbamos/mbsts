@@ -104,6 +104,8 @@ transformed data {
   real                                tau0_beta_p = get_tau0_start(m0, N_series * p, N_periods);
   real                                tau0_beta_q = get_tau0_start(m0, N_series * q, N_periods);
   real                                tau0_xi = get_tau0_start(m0, N_series * N_features, N_periods);
+  real                                tau0_theta_cycle = get_tau0_start(m0, N_series, N_periods);
+  real                                tau0_theta_season = get_tau0_start(m0, N_series * N_seasonality, N_periods);
   real                                min_beta_ar;
 
   if (ar == 1) min_beta_ar = 0;
@@ -133,11 +135,18 @@ parameters {
   
   // SEASONALITY
   row_vector[N_series]                                w_t[N_seasonality, N_periods-1]; // Random variation in seasonality
+  vector<lower=0>[N_series]                           lambda_m_theta_season[N_seasonality]; 
+  real<lower=0>                                       c_theta_season;
+  real<lower=0>                                       tau_theta_season;
   vector<lower=0>[N_series]                           theta_season[N_seasonality]; // Variance in seasonality
 
   // CYCLICALITY
   row_vector<lower=0, upper=pi()>[N_series]           lambda; // Frequency
   row_vector<lower=0, upper=1>[N_series]              rho; // Damping factor
+  // Hierarchical shrinkage prior on beta_trend 
+  vector<lower=0>[N_series]                           lambda_m_theta_cycle; 
+  real<lower=0>                                       c_theta_cycle;
+  real<lower=0>                                       tau_theta_cycle;
   vector<lower=0>[N_series]                           theta_cycle; // Variance in cyclicality
   matrix[N_periods - 1, N_series]                     kappa;  // Random changes in cyclicality
   matrix[N_periods - 1, N_series]                     kappa_star; // Random changes in counter-cyclicality
@@ -184,6 +193,9 @@ transformed parameters {
   matrix[ar, N_series] beta_p_hs = apply_hs_prior_m(beta_p, tau0_beta_p, sigma_y, tau_beta_p, lambda_m_beta_p, c_beta_p); 
   matrix[ar, N_series] beta_q_hs = apply_hs_prior_m(beta_q, tau0_beta_q, sigma_y, tau_beta_q, lambda_m_beta_q, c_beta_q); 
   matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
+  vector[N_series] theta_cycle_hs = apply_hs_prior_v(theta_cycle, tau0_theta_cycle, sigma_y, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle);
+  vector[N_series] theta_season_hs[N_seasonality];
+
   // Retain calculation of xi
   matrix[N_periods, N_series]                         xi = x * beta_xi_hs; // Predictors
 
@@ -207,6 +219,10 @@ transformed parameters {
   // ----- SEASONALITY ------
   for (ss in 1:N_seasonality) {
     int periodicity = s[ss];
+    
+    // Apply shrinkage prior
+    theta_season_hs[ss] = apply_hs_prior_v(theta_season[ss], tau0_theta_season, sigma_y, tau_theta_season, lambda_m_theta_season[ss], c_theta_season);
+    
     tau_s[ss][1] = w_t[ss][1];
     for (t in 1:(periodicity-1)) {
       tau_s[ss][t] = w_t[ss][t];
@@ -282,13 +298,13 @@ model {
 
   // SEASONALITY
   for (ss in 1:N_seasonality) {
-    theta_season[ss] ~ cauchy(0, inv_period_scale); 
+    hs_prior_lp(theta_season[ss], tau_theta_season, lambda_m_theta_season[ss], c_theta_season, inv_period_scale, nu);
   }
   
   // CYCLICALITY
   lambda ~ uniform(0, pi());
   rho ~ uniform(0, 1);
-  theta_cycle ~ cauchy(0, inv_period_scale);
+  hs_prior_lp(theta_cycle, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle, inv_period_scale, nu);
 
   // REGRESSION
   hs_prior_lp(to_vector(beta_xi), tau_beta_xi, lambda_m_beta_xi, c_beta_xi, inv_period_scale, nu);
@@ -303,9 +319,9 @@ model {
   to_vector(starting_prices) ~ uniform(min_price, max_price); 
   nu_trend ~ multi_normal_cholesky(zero_vector, L_Omega_ar);
   for (t in 1:(N_periods-1)) {
-    for (ss in 1:N_seasonality) w_t[ss, t] ~ normal(zero_vector, theta_season[ss]);
-    kappa[t] ~ normal(zero_vector, theta_cycle);
-    kappa_star[t] ~ normal(zero_vector, theta_cycle);
+    for (ss in 1:N_seasonality) w_t[ss, t] ~ normal(zero_vector, theta_season_hs[ss]);
+    kappa[t] ~ normal(zero_vector, theta_cycle_hs);
+    kappa_star[t] ~ normal(zero_vector, theta_cycle_hs);
     epsilon[t] ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
   }
 
@@ -332,11 +348,11 @@ generated quantities {
   matrix[N_series, N_series]                       innovation_corr = crossprod(L_omega_garch);
   
   {
-    matrix[N_series, N_series] diag_cycle = diag_matrix(theta_cycle);
+    matrix[N_series, N_series] diag_cycle = diag_matrix(theta_cycle_hs);
     matrix[N_series, N_series] diag_season[N_seasonality]; 
     vector[N_series] zero_t = zero_vector'; 
     
-    for (ss in 1:N_seasonality) diag_season[ss] = diag_matrix(theta_season[ss]);
+    for (ss in 1:N_seasonality) diag_season[ss] = diag_matrix(theta_season_hs[ss]);
     
     for (t in 1:periods_to_predict) {
       nu_ar_hat[t] = multi_normal_cholesky_rng(zero_t, L_Omega_ar)';

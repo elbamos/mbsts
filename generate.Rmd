@@ -49,10 +49,10 @@ library(marima)
 
 ```{r seed}
 set.seed(19746)
-periods_to_generate <- params$P + params$periods_to_predict
+pad <- 100
+periods_to_generate <- params$P + params$periods_to_predict + pad
 period_vline <- data.frame(xintercept=params$P)
 ```
-
 
 ## Trends
 
@@ -70,7 +70,7 @@ delta <- marima.sim(kvar=5,
                  averages=alpha_trend, 
                  resid.cov=crossprod(crossprod(diag(sqrt(theta_trend)), L_omega_trend)),
                  nstart=500, 
-                 nsim=periods_to_generate)
+                 nsim=params$P + params$periods_to_predict)
 
 delta %>% data.frame() %>%
   set_colnames(paste("series", 1:params$S, sep="_")) %>%
@@ -86,7 +86,7 @@ delta %>% data.frame() %>%
 ## Seasonality
 
 ```{r seasonality}
-theta_season <- abs(rcauchy(params$S, scale=1)) / params$period_scale
+theta_season <- abs(rcauchy(params$S, scale=.1)) / params$period_scale
 w <- matrix(rnorm(params$S * periods_to_generate, sd=theta_season^2), byrow=T, ncol=params$S)
 tau <- list()
 
@@ -99,6 +99,7 @@ for (t in 1:periods_to_generate) {
 }
 
 tau <- do.call(rbind, tau)
+tau <- tau[(pad+1):nrow(tau),]
 
 tau %>% data.frame() %>%
   set_colnames(paste("series", 1:params$S, sep="_")) %>%
@@ -138,6 +139,7 @@ for (t in 2:periods_to_generate) {
 }
 
 omega <- do.call(rbind, omega)
+omega <- omega[(pad+1):nrow(omega),]
 
 omega %>% data.frame() %>%
   set_colnames(paste("series", 1:params$S, sep="_")) %>%
@@ -158,7 +160,8 @@ omega_epsilon <- rlkjcorr(1, params$S)
 beta_p <- abs(rnorm(params$S, sd=0.2))
 beta_q <- abs(rnorm(params$S, sd=0.2))
 
-garchout <- ccgarch::eccc.sim(periods_to_generate, theta_epsilon, A=diag(beta_p), B=diag(beta_q), 
+garchout <- eccc.sim(params$P + params$periods_to_predict, 
+                     theta_epsilon, A=diag(beta_p), B=diag(beta_q), 
                      R=omega_epsilon, model="diagonal")
 
 epsilon <- garchout$eps
@@ -510,7 +513,6 @@ innovation_corr_hat %>%
   ggtitle("Innovation Correlations")
 ```
 
-
 ## Coefficients and Shrinkage Effects
 
 ### Visualize Shrinkage Parameters
@@ -524,7 +526,7 @@ shrinkage_hat %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=60) +
   geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
-  facet_grid(.variable + feature ~ series, scales ="free_x") +
+  facet_grid(.variable + feature ~ series, scales ="free") +
   theme_minimal()
 ```
 
@@ -548,11 +550,11 @@ coefficients_hat %>%
 ### Visualize Volatilities and Intercepts
 
 ```{r visualize_volatilities}
-volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[seasonality][series], omega_garch[series]) %>%
+volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle_hs[series], theta_season_hs[seasonality][series], omega_garch[series]) %>%
   ungroup() %>% 
   mutate(
     component = case_when(
-      .variable == "theta_season" ~ paste("theta_season", seasonality, sep="_"),
+      .variable %in% c("theta_season", "theta_season_hs") ~ paste("theta_season", seasonality, sep="_"),
       TRUE ~ .variable
     )
   )

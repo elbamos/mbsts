@@ -16,5 +16,3 @@ Currently the model includes the following features for multivariate time series
   - Correlations in expected returns
   - GARCH
   - CCC-GARCH
-  
-In its current form, the model has extraordinarily naive priors. A goal of the project is to replace these with hierarchical shrinkage priors. 

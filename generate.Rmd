@@ -39,6 +39,7 @@ library(purrr)
 library(rethinking)
 library(MASS)
 library(tidyr)
+library(ccgarch)
 ```
 
 # Generate Fake Data 
@@ -166,11 +167,13 @@ omega %>% data.frame() %>%
 ```{r innovations}
 theta_epsilon <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
 omega_epsilon <- rlkjcorr(1, params$S)
-L_omega_epsilon <- t(chol(omega_epsilon))
-L_Omega_epsilon <- crossprod(diag(theta_epsilon), L_omega_epsilon)
-Omega_epsilon <- tcrossprod(L_Omega_epsilon)
+beta_p <- abs(rnorm(params$S, sd=0.2))
+beta_q <- abs(rnorm(params$S, sd=0.2))
 
-epsilon <- mvrnorm(n=periods_to_generate, rep(0, params$S), Omega_epsilon)
+garchout <- eccc.sim(periods_to_generate, theta_epsilon, A=diag(beta_p), B=diag(beta_q), 
+                     R=omega_epsilon, model="diagonal")
+
+epsilon <- garchout$eps
 
 epsilon %>% data.frame() %>%
   set_colnames(paste("series", 1:params$S, sep="_")) %>%

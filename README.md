@@ -1,6 +1,8 @@
 # MBSTS
 
-The goal of this project is to build, test, and evaluate a generalized model for Multivariate Bayesian Structural Time Series in Stan.
+The goal of this project is to build, test, and evaluate a generalized model for Multivariate Bayesian Structural Time Series with GARCH in Stan.
+
+The variant of this model also applies "Finnish Horseshoe" hierarchical shrinkage parameters for feature selection, including a novel application of them to seasonality and cyclicality.
 
 ## Overview
 
@@ -16,14 +18,14 @@ In addition, this model incorporates CCC-GARCH for handling correlated volatilit
 
 Full list of features:
   - Linear trends (AR)
-  - Seasonality, where each price series may be given its own seasonal period
+  - Seasonality, with multiple seasonality periods
   - Cyclicality
   - External predictors
   - Correlations in expected returns
   - GARCH(p,q)
   - CCC-GARCH
   - Hierarchical shrinkage priors 
-  
+
 ## Notes on Running Stan
 
 Models with hierarchical shrinkage priors tend to require smaller stepsizes and higher treedepths. 

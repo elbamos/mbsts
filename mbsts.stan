@@ -88,8 +88,6 @@ data {
   int<lower=1,upper=N_series>                series[N];
   vector<lower=0>[N]                         weight;
   matrix[N_periods, N_features]              x; // Regression predictors
-  
-  matrix[periods_to_predict, N_features]     x_predictive;
 }
 
 transformed data {
@@ -339,7 +337,6 @@ generated quantities {
   matrix[periods_to_predict, N_series]             omega_star_hat; // Anti-cyclicality at time t
   matrix[periods_to_predict, N_series]             theta_hat; // Conditional variance of innovations 
   matrix[periods_to_predict, N_series]             epsilon_hat; 
-  matrix[periods_to_predict, N_series]             xi_hat = x_predictive * beta_xi_hs;
   matrix[periods_to_predict, N_series]             nu_ar_hat; 
   matrix[periods_to_predict, N_series]             kappa_hat;
   matrix[periods_to_predict, N_series]             kappa_star_hat; 
@@ -462,7 +459,7 @@ generated quantities {
   }
   
   {
-    matrix[periods_to_predict, N_series] price_changes = delta_hat + tau_hat_all + omega_hat + xi_hat + epsilon_hat;
+    matrix[periods_to_predict, N_series] price_changes = delta_hat + tau_hat_all + omega_hat + epsilon_hat;
     
     log_predicted_prices[1] = log_prices_hat[N_periods] + price_changes[1];
     for (t in 2:periods_to_predict) {

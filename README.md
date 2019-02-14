@@ -35,3 +35,4 @@ If you see significant numbers of divergent transitions, consider running with
 ```
 samples <- sampling(model, control=list(adapt_delta=0.99, max_treedepth=15))
 ```
+

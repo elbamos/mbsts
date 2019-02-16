@@ -113,7 +113,7 @@ tau %>% data.frame() %>%
 ## Cyclicality
 
 ```{r cyclicality}
-lambda <- runif(params$S, 0, pi)
+lambda <- 2 * pi / runif(params$S, 26, 150)
 rho <- runif(params$S, 0, 1)
 theta_cycle <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
 kappa <- matrix(rnorm(params$S * periods_to_generate, sd = theta_cycle), byrow = T, ncol=params$S)
@@ -214,6 +214,7 @@ assemble_stan_data <- function(prices, predictors) compose_data(
                           period_scale = params$period_scale, 
                           s = params$s,
                           N_seasonality = length(params$s),
+                          cyclicality_prior = 52 * 5, 
                           # Parameters controlling hierarchical shrinkage
                           nu = params$nu, 
                           m0 = params$m0,
@@ -385,6 +386,7 @@ price_forecast %>%
 
 ```{r recover_components}
 combined_components <- samples %>%  gather_draws(delta[period, series], tau_s[seasonality][period, series], omega[period, series], epsilon[period, series], xi[period, series])  %>% 
+  ungroup() %>% 
   mutate(
     component = case_when(
       .variable == "delta" ~ "trends", 
@@ -447,6 +449,7 @@ cylicality_hat %>%
   geom_histogram(bins=60) +
   geom_vline(data=true_cyclicality, aes(xintercept=.value), color="blue", size=0.5) +
   facet_grid(series ~ .variable, scales="free") +
+  scale_x_log10() +
   theme_minimal() + 
   ggtitle("Estimates of Cycle Frequency and Damping")
 ```

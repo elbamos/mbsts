@@ -77,6 +77,7 @@ data {
   int<lower=1> s[N_seasonality]; // seasonality 
   // A prior on the scale of each factor; a reasonable estimate the number of periods over which a price could reasonably double
   real<lower=1> period_scale; 
+  real<lower=3> cyclicality_prior; // Prior estimate of the number of periods in the business cycle 
   
   // Parameeters controlling sparse feature selection
   real<lower=0,upper=1>              m0; // Sparsity target; proportion of features we expect to be relevant
@@ -105,7 +106,10 @@ transformed data {
   real                                tau0_theta_cycle = get_tau0_start(m0, N_series, N_periods);
   real                                tau0_theta_season = get_tau0_start(m0, N_series * N_seasonality, N_periods);
   real                                min_beta_ar;
-
+  real                                lambda_mean = 2 / cyclicality_prior; 
+  real                                lambda_a = -lambda_mean * 2 / (lambda_mean - 1); 
+  int                                 max_s = max(s) - 1;
+  
   if (ar == 1) min_beta_ar = 0;
   else min_beta_ar = -1;
 
@@ -132,7 +136,7 @@ parameters {
   cholesky_factor_corr[N_series]                      L_omega_ar; // Correlations among trend changes
   
   // SEASONALITY
-  row_vector[N_series]                                w_t[N_seasonality, N_periods-1]; // Random variation in seasonality
+  row_vector[N_series]                                w_t[N_seasonality, N_periods-1 + max_s]; // Random variation in seasonality
   vector<lower=0>[N_series]                           lambda_m_theta_season[N_seasonality]; 
   real<lower=0>                                       c_theta_season;
   real<lower=0>                                       tau_theta_season;
@@ -216,24 +220,21 @@ transformed parameters {
 
   // ----- SEASONALITY ------
   for (ss in 1:N_seasonality) {
-    int periodicity = s[ss];
+    int periodicity = s[ss] - 1;
+    matrix[N_periods - 1 + periodicity, N_series]  tau_s_temp; 
+    int start = max_s - periodicity; 
     
-    // Apply shrinkage prior
+        // Apply shrinkage prior
     theta_season_hs[ss] = apply_hs_prior_v(theta_season[ss], tau0_theta_season, sigma_y, tau_theta_season, lambda_m_theta_season[ss], c_theta_season);
     
-    tau_s[ss][1] = w_t[ss][1];
-    for (t in 1:(periodicity-1)) {
-      tau_s[ss][t] = w_t[ss][t];
+    
+    for (t in 1:periodicity) tau_s_temp[t] = w_t[ss][start + t];
+    for (t in 1:(N_periods-1)) {
+      for (d in 1:N_series) tau_s_temp[periodicity + t, d] = -sum(sub_col(tau_s_temp, t, d, periodicity));
+      tau_s_temp[periodicity + t] += w_t[ss][start + periodicity + t];
     }
-    for (t in periodicity:(N_periods-1)) {
-      matrix[periodicity - 1, N_series] past_seasonality = block(tau_s[ss], t - periodicity + 1, 1, periodicity-1, N_series);
-      
-      for (d in 1:N_series) {
-        tau_s[ss][t, d] = -sum(col(past_seasonality, d));
-      }
-      tau_s[ss][t] += w_t[ss][t];
-    }
-    if (ss == 1) tau = tau_s[1];
+    tau_s[ss] = block(tau_s_temp, periodicity + 1, 1, N_periods - 1, N_series); 
+    if (ss == 1) tau = tau_s[ss];
     else tau += tau_s[ss];
   }
 
@@ -297,10 +298,11 @@ model {
   // SEASONALITY
   for (ss in 1:N_seasonality) {
     hs_prior_lp(theta_season[ss], tau_theta_season, lambda_m_theta_season[ss], c_theta_season, inv_period_scale, nu);
+    for (t in 1:max_s) w_t[ss, t] ~ normal(zero_vector, theta_season[ss]);
   }
   
   // CYCLICALITY
-  lambda ~ uniform(0, pi());
+  (lambda / pi()) ~ beta(lambda_a, 2); 
   rho ~ uniform(0, 1);
   hs_prior_lp(theta_cycle, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle, inv_period_scale, nu);
 
@@ -317,9 +319,11 @@ model {
   to_vector(starting_prices) ~ uniform(min_price, max_price); 
   nu_trend ~ multi_normal_cholesky(zero_vector, L_Omega_ar);
   for (t in 1:(N_periods-1)) {
-    for (ss in 1:N_seasonality) w_t[ss, t] ~ normal(zero_vector, theta_season_hs[ss]);
+    for (ss in 1:N_seasonality) w_t[ss, t+max_s] ~ normal(zero_vector, theta_season_hs[ss]);
     kappa[t] ~ normal(zero_vector, theta_cycle_hs);
     kappa_star[t] ~ normal(zero_vector, theta_cycle_hs);
+    kappa[t] ~ normal(zero_vector, theta_cycle);
+    kappa_star[t] ~ normal(zero_vector, theta_cycle);
     epsilon[t] ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
   }
 
@@ -331,7 +335,6 @@ model {
 generated quantities {
   matrix[periods_to_predict, N_series]             log_predicted_prices; 
   matrix[periods_to_predict, N_series]             delta_hat; // Trend at time t
-  matrix[periods_to_predict, N_series]             tau_hat[N_seasonality]; // Seasonality at time t
   matrix[periods_to_predict, N_series]             tau_hat_all;
   matrix[periods_to_predict, N_series]             omega_hat; // Cyclicality at time t
   matrix[periods_to_predict, N_series]             omega_star_hat; // Anti-cyclicality at time t
@@ -362,19 +365,16 @@ generated quantities {
   
   // TREND
   if (ar > 1) {
-    for (t in 1:periods_to_predict) {
-      if (t == 1) {
-        delta_hat[1] = make_delta_t(alpha_ar, beta_ar_hs, block(delta, N_periods - ar, 1, ar, N_series), nu_ar_hat[1]);
-      } else if (t <= ar) {
-        int periods_forward = t - 1;
-        int periods_back = ar - periods_forward;
-        int start_period = N_periods- 1 - periods_back; 
-        delta_hat[t] = make_delta_t(alpha_ar, beta_ar_hs, append_row(block(delta, start_period, 1, periods_back, N_series), 
-                                                                        block(delta_hat, 1, 1, periods_forward, N_series)), nu_ar_hat[t]);
-      } else {
-        delta_hat[t] = make_delta_t(alpha_ar, beta_ar_hs, block(delta_hat, t - ar, 1, ar, N_series), nu_ar_hat[t]);
-      }
-    }
+    matrix[ar + periods_to_predict, N_series] delta_temp = append_row(
+      block(delta, N_periods - ar, 1, ar, N_series), 
+      rep_matrix(0, periods_to_predict, N_series)
+    ); 
+    
+    for (t in 1:periods_to_predict) delta_temp[ar + t] = make_delta_t(alpha_ar, beta_ar_hs, 
+                                                block(delta_temp, t, 1, ar, N_series), 
+                                                nu_ar_hat[1]);
+                                                
+    delta_hat = block(delta_temp, ar + 1, 1, periods_to_predict, N_series); 
   } else {
     row_vector[N_series] beta_ar_tmp = beta_ar_hs[1];
     delta_hat[1] = make_delta_t_ar1(alpha_ar, beta_ar_tmp, delta[N_periods-1], nu_ar_hat[1]);
@@ -384,28 +384,18 @@ generated quantities {
   
   // SEASONALITY
   for (ss in 1:N_seasonality) {
-    int periodicity = s[ss];
+    int periodicity = s[ss] - 1;
+    matrix[periodicity + periods_to_predict, N_series] tau_temp = append_row(
+      block(tau_s[ss], N_periods - periodicity, 1, periodicity, N_series), 
+      rep_matrix(0, periods_to_predict, N_series)
+    ); 
+    
     for (t in 1:(periods_to_predict)) {
-      matrix[periodicity - 1, N_series] prior_tau;
-      
-      if (t == 1) {
-        prior_tau = block(tau_s[ss], N_periods - periodicity + 1, 1, periodicity - 1, N_series);
-      } else if (t < periodicity) {
-        prior_tau = append_row(
-          block(tau_hat[ss], 1, 1, t-1, N_series), 
-          block(tau_s[ss], N_periods - 1 - (periodicity - 1 - (t-1)), 1, periodicity - 1 - (t-1), N_series)
-        );
-      } else {
-        prior_tau = block(tau_hat[ss], t - periodicity + 1, 1, periodicity - 1, N_series); 
-      }
-      
-      for (d in 1:N_series) {
-        tau_hat[ss][t, d] = -sum(col(prior_tau, d));
-      }
-      tau_hat[ss][t] += w_t_hat[ss][t]; 
+      for (d in 1:N_series) tau_temp[periodicity + t, d] = -sum(sub_col(tau_temp, t, d, periodicity));
+      tau_temp[periodicity + t] += w_t_hat[ss][t]; 
     }  
-    if (ss == 1) tau_hat_all = tau_hat[ss];
-    else tau_hat_all += tau_hat[ss];
+    if (ss == 1) tau_hat_all = block(tau_temp, periodicity + 1, 1, periods_to_predict, N_series);
+    else tau_hat_all += block(tau_temp, periodicity + 1, 1, periods_to_predict, N_series);
   }
 
   
@@ -416,46 +406,35 @@ generated quantities {
       omega_star_hat[t] = -(rho_sin_lambda .* omega[N_periods-1]) + (rho_cos_lambda .* omega_star[N_periods-1]) + kappa_star_hat[t];
     } else {
       omega_hat[t] = (rho_cos_lambda .* omega_hat[t-1]) + (rho_sin_lambda .* omega_star_hat[t-1]) + kappa_hat[t];
-      omega_star_hat[t] = -(rho_sin_lambda .* omega_hat[t-1]) + (rho_cos_lambda .* omega_star_hat[t-1]) + kappa_star_hat[t];   
+      omega_star_hat[t] = -(rho_sin_lambda .* omega_hat[t-1]) + (rho_cos_lambda .* omega_star_hat[t-1]) + kappa_star_hat[t];
     }
   }
   
   
   // Univariate GARCH
-  for (t in 1:periods_to_predict) {
-    row_vector[N_series]  p_component; 
-    row_vector[N_series]  q_component; 
+  {
+    matrix[p + periods_to_predict, N_series] theta_temp = append_row(
+      block(theta, N_periods - p, 1, p, N_series), 
+      rep_matrix(0, periods_to_predict, N_series)
+    );
+    matrix[q + periods_to_predict, N_series] epsilon_temp = append_row(
+      block(epsilon, N_periods - q, 1, q, N_series), 
+      rep_matrix(0, periods_to_predict, N_series)
+    ); 
     
-    if (t == 1) {
-      p_component = columns_dot_product(beta_p_hs, block(theta, N_periods - 1 - p, 1, p, N_series));
-    } else if (t <= p) {
-      int periods_forward = t - 1;
-      int periods_back = p - periods_forward;
-      int start_period = N_periods- 1 - periods_back; 
-      p_component = columns_dot_product(beta_p_hs, append_row(
-        block(theta, start_period, 1, periods_back, N_series),
-        block(theta_hat, 1, 1, periods_forward, N_series)
-      ));
-    } else {
-      p_component = columns_dot_product(beta_p_hs, block(theta_hat, t - p, 1, p, N_series));
+    for (t in 1:periods_to_predict) {
+      row_vector[N_series]  p_component; 
+      row_vector[N_series]  q_component;      
+      
+      p_component = columns_dot_product(beta_p_hs, block(theta_temp, t, 1, p, N_series));
+      q_component = columns_dot_product(beta_q_hs, square(block(epsilon_temp, t, 1, q, N_series)));
+      
+      theta_temp[t + p] = omega_garch + p_component + q_component;
+      epsilon_temp[t + q] = multi_normal_cholesky_rng(zero_vector', make_L(theta_temp[t + p], L_omega_garch))';
     }
     
-    if (t == 1) {
-      q_component = columns_dot_product(beta_q_hs, square(block(epsilon, N_periods - 1 - q, 1, q, N_series)));
-    } else if (t <= q) {
-      int periods_forward = t - 1;
-      int periods_back = q - periods_forward;
-      int start_period = N_periods- 1 - periods_back; 
-      q_component = columns_dot_product(beta_q_hs, square(append_row(
-        block(epsilon, start_period, 1, periods_back, N_series),
-        block(epsilon_hat, 1, 1, periods_forward, N_series)
-      ))); 
-    } else {
-      q_component = columns_dot_product(beta_q_hs, square(block(epsilon_hat, t - q, 1, q, N_series)));
-    }
-    
-    theta_hat[t] = omega_garch + p_component + q_component;
-    epsilon_hat[t] = multi_normal_cholesky_rng(zero_vector', make_L(theta_hat[t], L_omega_garch))';
+    theta_hat = block(theta_temp, p + 1, 1, periods_to_predict, N_series);
+    epsilon_hat = block(epsilon_temp, q + 1, 1, periods_to_predict, N_series); 
   }
   
   {

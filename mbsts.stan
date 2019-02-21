@@ -310,6 +310,8 @@ generated quantities {
   matrix[periods_to_predict, N_series]             kappa_hat;
   matrix[periods_to_predict, N_series]             kappa_star_hat; 
   matrix[periods_to_predict, N_series]             w_t_hat[N_seasonality];
+  matrix[N_series, N_series]                       trend_corr = crossprod(L_omega_ar);
+  matrix[N_series, N_series]                       innovation_corr = crossprod(L_omega_garch);
   
   for (t in 1:periods_to_predict) {
     nu_ar_hat[t] = multi_normal_cholesky_rng(to_vector(zero_vector), L_Omega_ar)';

@@ -5,20 +5,20 @@ date: "2/7/2019"
 output: html_document
 params:
   ####### Parameters on data generation
-  P: 52                           # Number of periods
+  P: !r 250 * 10                  # Number of periods
   use_sampled: F                  # Whether to use the exact prices generated or sample
   N: 700                          # Number of sampled prices if use_sampled = T
-  S: 5                            # Number of price series
+  S: 10                           # Number of price series
   F: 2                            # Number of features for regression
   ###### Parameters controlling the model 
-  periods_to_predict: 12
-  period_scale: 52                # Prior on the scale of price movements
+  periods_to_predict: 125
+  period_scale: 250                # Prior on the scale of price movements
   # a reasonable starting place is the number of periods over which 
   # its reasonably expected that a price may double; e.g., 52 for weekly prices
-  p: 2                            
-  q: 2
-  ar: 2                           # Number of periods for trend model
-  s: !r c(4, 12)                  # Seasonality periods
+  p: 3                            
+  q: 3
+  ar: 3                           # Number of periods for trend model
+  s: !r c(5, 20, 60)              # Seasonality periods
   ###### Parameters controlling hierarchical shrinkage 
   nu: 3
   m0: .05                         # Prior on proportion of coefficients that are relevant
@@ -47,7 +47,7 @@ library(marima)
 # Generate Fake Data 
 
 ```{r seed}
-set.seed(19746)
+set.seed(1974)
 periods_to_generate <- params$P + params$periods_to_predict
 period_vline <- data.frame(xintercept=params$P)
 ```
@@ -55,19 +55,19 @@ period_vline <- data.frame(xintercept=params$P)
 ## Trends
 
 ```{r trends}
-theta_trend <- abs(rcauchy(params$S, 0, .05)) / params$period_scale
+theta_trend <- abs(rcauchy(params$S, 0, 1e-4)) / params$period_scale
 omega_trend <- rlkjcorr(1, params$S)
-alpha_trend <- rnorm(params$S, 0, .1) / params$period_scale
+alpha_trend <- rnorm(params$S, 0, .001) / params$period_scale
 #beta_trend <- pmin(abs(matrix(rnorm(params$S * params$ar, sd=0.1),  ncol=params$S)), .3) 
 L_omega_trend <- t(chol(omega_trend))
 
-delta <- marima.sim(kvar=5,
+delta <- marima.sim(kvar=params$S,
                  ar.model=abind(diag(rep(1, params$S)), 
                                 matrix(rep(0, params$S^2), ncol=params$S), 
                                 matrix(rcauchy(params$S^2, 0, scale=0.1), ncol=params$S), along=3),
                  averages=alpha_trend, 
                  resid.cov=crossprod(crossprod(diag(sqrt(theta_trend)), L_omega_trend)),
-                 nstart=500, 
+                 nstart=50, 
                  nsim=periods_to_generate)
 
 delta %>% data.frame() %>%
@@ -85,18 +85,20 @@ delta %>% data.frame() %>%
 
 ```{r seasonality}
 theta_season <- abs(rcauchy(params$S, scale=1)) / params$period_scale
-w <- matrix(rnorm(params$S * periods_to_generate, sd=theta_season^2), byrow=T, ncol=params$S)
+seasoning <- 500
+w <- matrix(rnorm(params$S * (periods_to_generate + seasoning), sd=theta_season^2), byrow=T, ncol=params$S)
 tau <- list()
 
-for (t in 1:periods_to_generate) {
-  if (t < params$s) tau <- c(tau, list(w[t, ]))
+for (t in 1:(periods_to_generate + seasoning)) {
+  if (t < params$s[3]) tau <- c(tau, list(w[t, ]))
   else {
-    prior_tau <- do.call(rbind, tau[(t - params$s + 1):(t-1)])
+    prior_tau <- do.call(rbind, tau[(t - params$s[3] + 1):(t-1)])
     tau <- c(tau, list(-colSums(prior_tau) + w[t, ]))
   }
 }
 
 tau <- do.call(rbind, tau)
+tau <- tau[(seasoning + 1):nrow(tau), ]
 
 tau %>% data.frame() %>%
   set_colnames(paste("series", 1:params$S, sep="_")) %>%
@@ -113,7 +115,7 @@ tau %>% data.frame() %>%
 ## Cyclicality
 
 ```{r cyclicality}
-lambda <- 2 * pi / runif(params$S, 26, 150)
+lambda <- 2 * pi / runif(params$S, 250, 1000)
 rho <- runif(params$S, 0, 1)
 theta_cycle <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
 kappa <- matrix(rnorm(params$S * periods_to_generate, sd = theta_cycle), byrow = T, ncol=params$S)
@@ -151,7 +153,7 @@ omega %>% data.frame() %>%
 ## Innovations
 
 ```{r innovations}
-theta_epsilon <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
+theta_epsilon <- abs(rcauchy(params$S, 0, .05)) / params$period_scale
 omega_epsilon <- rlkjcorr(1, params$S)
 beta_p <- abs(rnorm(params$S, sd=0.2))
 beta_q <- abs(rnorm(params$S, sd=0.2))
@@ -380,6 +382,26 @@ price_forecast %>%
   theme_minimal()
 ```
 
+### Combined
+
+```{r combined_plot}
+bind_rows(data %>% mutate(.chain="Actual") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
+  dplyr::filter(.chain %in% c("Actual", "mean_hat")) %>% 
+  ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain)) +
+  geom_line(size=0.5) +
+  stat_lineribbon(data=price_forecast %>% 
+    ungroup() %>% 
+    mutate(price = exp(.value), 
+           period = period + params$P) %>%
+    group_by(series), 
+    aes(x = period, y=price, group=series, color=series), 
+    .width=c(0.2, 0.3, 0.66), alpha=0.1, color="darkblue", size=0.1) +
+  scale_fill_brewer("Confidence", palette="Blues") +
+  scale_y_continuous(limits=c(0, 300)) +
+  theme_minimal() +
+  ggtitle("Reconstructed Time Series and Forecast vs. Actual")
+```
+
 ## Components 
 
 ### Visualize All Components
@@ -510,8 +532,8 @@ innovation_corr_hat %>%
 ### Visualize Coefficients
 
 ```{r visualize_coefficients}
-coefficients_hat <- samples %>% gather_draws(beta_ar[feature, series], beta_xi[feature, series], 
-                                             beta_p[feature, series], beta_q[feature, series])
+coefficients_hat <- samples %>% gather_draws(beta_ar_c[feature, series], beta_xi[feature, series], 
+                                             beta_p_c[feature, series], beta_q_c[feature, series])
 
 coefficients_hat %>%
   ggplot(aes(x = .value)) +

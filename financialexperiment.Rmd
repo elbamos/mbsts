@@ -1,0 +1,364 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(rethinking)
+library(bayesplot)
+library(tidybayes)
+library(rstan)
+library(ggplot2)
+library(forcats)
+library(purrr)
+library(tidyr)
+library(abind)
+library(lubridate)
+library(pdfetch)
+```
+
+```{r define_tickers}
+tickers <- c("AAPL", "MSFT", "AMD", "INTL", "GE", "GM", "SHLD", "GES", "WSO", "SNAP")
+from <- as.Date("2018-06-01")
+leave_out <- 120
+```
+
+```{r vis_prices}
+
+data <- pdfetch_YAHOO(tickers, fields="adjclose", from=from, to=Sys.Date()) %>% 
+  data.frame() %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="y", -period)
+
+data %>%
+  ggplot(aes(x=period, y=y, color=series)) +
+  geom_line() +
+  theme_minimal()
+```
+
+```{r prepare_data}
+data %<>% arrange(period, series) %>% mutate(id = 1:n(), weight=1)
+predictors <- matrix(rep(0, (max(data$period) - leave_out) * 2), ncol=2)
+stan_data <- compose_data(
+                          # The data
+                          data %>% 
+                            dplyr::select(-id) %>% 
+                            dplyr::filter(period < max(data$period) - leave_out), 
+                          x=predictors, 
+                          N_periods = max(data$period) - leave_out,
+                          N_features = ncol(predictors),
+                          # Parameters controlling the model 
+                          periods_to_predict = leave_out, 
+                          p = 3, 
+                          q = 3, 
+                          ar = 3, 
+                          period_scale = (max(data$period) / (as.numeric(Sys.Date() - from) / 365)) * 8, 
+                          s = c(5, 20),
+                          N_seasonality = 2,
+                          cyclicality_prior = 250 * 5, 
+                          # Parameters controlling hierarchical shrinkage
+                          nu = 3, 
+                          m0 = .4,
+                          .n_name = n_prefix("N"))
+```
+
+
+```{r model}
+model <- stan_model("./mbsts.stan")
+```
+
+```{r sample}
+samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=4,
+                    #control=list(adapt_delta=0.9, max_treedepth=15), 
+                    init="0"
+                    ) %>% recover_types(data)
+```
+
+# Inspect Model
+
+## Prediction Accuracy
+
+### Residuals 
+
+```{r recover_y_hat}
+y_hat <- samples %>% gather_draws(log_y_hat[id]) %>%
+  mutate(.value = exp(.value) - 1)
+```
+
+```{r residuals}
+y_hat %>% 
+  dplyr::select(id, .value) %>%
+  inner_join(data) %>% 
+  mutate(
+    error = .value - y
+  ) %>%
+  group_by(id, series) %>%
+  summarize(
+    mean_error = mean(error),
+    rmse = sqrt(mean(error^2)), 
+    sd_y_hat = sd(.value)
+  ) %>% 
+  dplyr::select(series, mean_error, rmse, sd_y_hat) %>%
+  gather(key="metric", value="value", -series, -id) %>% 
+  ggplot(aes(x = value, fill=series)) +
+  geom_histogram(bins=40, position="identity", alpha = .3) + 
+  facet_grid(series ~ metric, scales="free") +
+  theme_minimal() +
+  ggtitle("Residuals")
+```
+
+```{r visualize_predictions}
+data %>% dplyr::select(id, y, series) %>%
+  inner_join(y_hat %>% 
+               group_by(id) %>%
+               summarize(y_hat = mean(.value))) %>% group_by(series) %>% 
+  ggplot(aes(x = y, y=y_hat)) +
+  geom_point(size=0.2, alpha=0.2) +
+  facet_wrap(~ series) +
+  scale_x_continuous(limits=c(0, NA)) + 
+  scale_y_continuous(limits=c(0, NA)) + 
+  annotate("segment", x = 0, y = 0, xend=max(data$y), yend=max(data$y), color="red", size=0.5, alpha=0.5) +
+  theme_minimal() + 
+  ggtitle("Prices vs. Mean Predictions")
+```
+
+### Recovered Time Series
+
+```{r recover_time_series}
+periodic_price_hat <- samples %>% gather_draws(log_prices_hat[period, series])
+```
+
+```{r time_series_by_chain}
+mean_periodic_price_hat <- periodic_price_hat %>%
+  group_by(period, series) %>%
+  summarize(
+    y_hat = exp(mean(.value))
+  ) %>%
+  mutate(.chain = as.character("mean_hat"))
+
+periodic_price_hat %>%
+  group_by(period, series, .chain) %>%
+  summarize(
+    y_hat = exp(mean(.value))
+  ) %>%
+  mutate(.chain = as.character(.chain)) %>%
+  bind_rows(data %>% mutate(.chain="gen") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
+  mutate(alpha = case_when(
+    .chain %in% c("gen", "mean_hat") ~ .8, 
+    TRUE ~ .2
+  )) %>%
+  ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain, alpha=I(alpha))) +
+  geom_line(size=0.5) +
+  theme_minimal() +
+  ggtitle("Reconstruction of Time Series By Chain")
+```
+
+### Forecast
+
+```{r gather_price_forecast}
+price_forecast <- samples %>% 
+  gather_draws(log_predicted_prices[period, series]) 
+```
+
+```{r visualize_price_forceast}
+true_future <- data %>%
+  dplyr::filter(period > max(data$period) - leave_out) %>%
+  mutate(period = period - (max(data$period) - leave_out))
+  
+
+price_forecast %>% 
+  mutate(price = exp(.value)) %>%
+  group_by(series) %>% 
+  ggplot(aes(x = period, y=price, group=series, color=series)) +
+  stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
+  geom_line(data=true_future, aes(x=period, y=y, color=series)) +
+  scale_fill_brewer("Confidence", palette="Blues") +
+  scale_y_continuous(limits=c(0, 500)) +
+  #scale_y_log10() +
+  theme_minimal()
+```
+
+### Combined Plot
+
+```{r combined_plot}
+  bind_rows(data %>% mutate(.chain="Actual") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
+  dplyr::filter(.chain %in% c("Actual", "mean_hat")) %>% 
+  ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain)) +
+  geom_line(size=0.5) +
+  stat_lineribbon(data=price_forecast %>% 
+    ungroup() %>% 
+    mutate(price = exp(.value), 
+           period = period + (max(data$period) - leave_out)) %>%
+    group_by(series), 
+    aes(x = period, y=price, group=series, color=series), 
+    .width=c(0.2, 0.3, 0.66), alpha=0.1, color="darkblue", size=0.1) +
+  scale_fill_brewer("Confidence", palette="Blues") +
+  scale_y_continuous(limits=c(0, 300)) +
+  theme_minimal() +
+  ggtitle("Reconstructed Time Series and Forecast vs. Actual", 
+          subtitle="Predicting 120 days of closing prices from 60 days of data")
+```
+
+
+## Components 
+
+### Visualize All Components
+
+```{r recover_components}
+combined_components <- samples %>%  gather_draws(delta[period, series], tau_s[seasonality][period, series], omega[period, series], epsilon[period, series], xi[period, series])  %>% 
+  ungroup() %>% 
+  mutate(
+    component = case_when(
+      .variable == "delta" ~ "trends", 
+      .variable == "epsilon" ~ "innovations", 
+      .variable == "tau_s" ~ paste("seasonality", seasonality, sep="_"), 
+      .variable == "omega" ~ "cyclicality", 
+      .variable == "xi" ~ "predictors"
+    )
+  )
+
+components_mean <- combined_components %>%
+  ungroup() %>%
+  group_by(period, series, component) %>%
+  summarize(.value = mean(.value)) %>% 
+  mutate(.chain = "mean_hat")
+
+components_mean %>%
+  ggplot(aes(x = period, y = .value, color=component)) +
+  facet_grid(series ~ ., scales="free_y") +
+  geom_line(size=0.2) +
+  theme_minimal() +
+  ggtitle("Components of Price Movements (Means)")
+```
+
+```{r view_components_by_chain}
+components_by_chain <- combined_components %>%
+  ungroup() %>%
+  group_by(period, series, component, .chain) %>%
+  summarize(.value = mean(.value)) %>%
+  mutate(.chain = as.character(.chain))
+
+bind_rows(components_by_chain, components_mean) %>%
+  mutate(alpha = case_when(
+    .chain == "mean_hat" ~ 1, 
+    TRUE ~ 0.2
+  )) %>%
+  ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain), alpha=I(alpha))) +
+  facet_grid(series ~ ., scales="free_y") +
+  geom_line(size=0.2) +
+  theme_minimal() +
+  ggtitle("Components of Price Movements (By Chain)")
+```
+
+### Cyclicality
+
+```{r cyclicality}
+cylicality_hat <- samples %>% gather_draws(lambda[series], rho[series])
+```
+
+```{r view_cyclicality}
+cylicality_hat %>% 
+  ggplot(aes(x = .value)) + 
+  geom_histogram(bins=60) +
+  facet_grid(series ~ .variable, scales="free") +
+  scale_x_log10() +
+  theme_minimal() + 
+  ggtitle("Estimates of Cycle Frequency and Damping")
+```
+
+## Correlations 
+
+### Trend Correlations
+
+```{r recover_return_correlations}
+trend_corr_hat <- samples %>% gather_draws(trend_corr[series1, series2])
+
+true_trends <- omega_trend %>%
+  data.frame() %>%
+  set_colnames(1:ncol(omega_trend)) %>%
+  mutate(series1 = 1:n()) %>%
+  gather(key="series2", value=".value", -series1)
+```
+
+```{r show_trend_corr}
+trend_corr_hat %>%
+  dplyr::filter(series1 != series2) %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=100) +
+  geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
+  geom_vline(data=true_trends, aes(xintercept=.value), color="blue", size=0.2) +
+  facet_grid(series1 ~ series2) +
+  theme_minimal() + 
+  ggtitle("Trend Correlations")
+```
+
+### Innovation Correlations
+
+```{r recover_innovation_correlations}
+innovation_corr_hat <- samples %>% gather_draws(innovation_corr[series1, series2])
+
+true_innovations <- omega_epsilon %>%
+  data.frame() %>%
+  set_colnames(1:ncol(omega_trend)) %>%
+  mutate(series1 = 1:n()) %>%
+  gather(key="series2", value=".value", -series1)
+```
+
+```{r show_innovation_corr}
+innovation_corr_hat %>%
+  dplyr::filter(series1 != series2) %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=100) +
+  geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
+  geom_vline(data=true_innovations, aes(xintercept=.value), color="blue", size=0.2) +
+  facet_grid(series1 ~ series2) +
+  theme_minimal() + 
+  ggtitle("Innovation Correlations")
+```
+
+
+## Coefficients and Shrinkage Effects
+
+### Visualize Coefficients
+
+```{r visualize_coefficients}
+coefficients_hat <- samples %>% gather_draws(beta_ar_c[feature, series], beta_xi[feature, series], 
+                                             beta_p_c[feature, series], beta_q_c[feature, series])
+
+coefficients_hat %>%
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=60) +
+  facet_grid(series ~ .variable + feature, scales="free_x") +
+  theme_minimal() +
+  ggtitle("Estimated Coefficients")
+```
+
+
+## Volatilities and Intercepts 
+
+### Visualize Volatilities and Intercepts
+
+```{r visualize_volatilities}
+volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[seasonality][series], omega_garch[series]) %>%
+  ungroup() %>% 
+  mutate(
+    component = case_when(
+      .variable == "theta_season" ~ paste("theta_season", seasonality, sep="_"),
+      TRUE ~ .variable
+    )
+  )
+
+volatilities_hat %>% 
+  ggplot(aes(x = .value)) +
+  geom_histogram(bins=60) +
+  facet_grid(component ~ series, scales="free_x") +
+  theme_minimal() +
+  ggtitle("Estimated Volatilities and Baselines")
+```
+
+
+# DONE

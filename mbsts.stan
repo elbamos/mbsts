@@ -17,13 +17,17 @@ functions {
   row_vector pacf_to_acf(vector x) {
     int n = num_elements(x);
     matrix[n, n] y = diag_matrix(x);
+    row_vector[n] out; 
 
     for (k in 1:n) {
       for (i in 1:(k - 1)) {
         y[k, i] = y[k - 1, i] + x[k] * y[k - 1, k - i];
       }
     }
-    return -y[n];
+    for (i in 1:n) {
+      out[i] = y[n, n - i + 1];
+    }
+    return -out;
   }
   
   void pacf_to_acf_ladj_lp(vector r) {
@@ -135,7 +139,7 @@ parameters {
 }
 
 transformed parameters {
-  matrix[N_periods, N_series]                         log_prices_hat; // Observable prices
+  matrix[N_periods, N_series]                         log_prices; // Observable prices
   matrix[N_periods-1, N_series]                       delta; // Trend at time t
   matrix[N_periods-1, N_series]                       tau_s[N_seasonality]; // Seasonality for each periodicity
   matrix[N_periods-1, N_series]                       tau; // Total seasonality
@@ -229,13 +233,13 @@ transformed parameters {
 
   // ----- ASSEMBLE TIME SERIES ------
 
-  log_prices_hat[1] = starting_prices; 
+  log_prices[1] = starting_prices; 
   for (t in 2:N_periods) {
-    log_prices_hat[t] = log_prices_hat[t-1] + delta[t-1] + tau[t-1] + omega[t-1] + xi[t-1] + epsilon[t-1];
+    log_prices[t] = log_prices[t-1] + delta[t-1] + tau[t-1] + omega[t-1] + xi[t-1] + epsilon[t-1];
   }
   
   for (n in 1:N) {
-    log_y_hat[n] = log_prices_hat[period[n], series[n]];
+    log_y_hat[n] = log_prices[period[n], series[n]];
   }
 }
 
@@ -247,11 +251,11 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
-  to_vector(beta_ar_c) ~ cauchy(0, .1); 
+  to_vector(beta_ar) ~ cauchy(0, .1); 
   // log abs det for the stationarity transformation
-  if (ar > 1) for (n in 1:N_series) {
-    pacf_to_acf_ladj_lp(col(beta_ar, n)); 
-  }
+  #if (ar > 1) for (n in 1:N_series) {
+  #  pacf_to_acf_ladj_lp(col(beta_ar, n)); 
+  #}
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
   L_omega_ar ~ lkj_corr_cholesky(1);
 
@@ -271,15 +275,15 @@ model {
 
   // INNOVATIONS
   omega_garch ~ cauchy(0, inv_period_scale);
-  to_vector(beta_p_c) ~ cauchy(0, .1);
-  to_vector(beta_q_c) ~ cauchy(0, .1); 
+  to_vector(beta_p) ~ cauchy(0, .1);
+  to_vector(beta_q) ~ cauchy(0, .1); 
   // log abs det for the stationarity transformation
-  if (p > 1) for (n in 1:N_series) {
-    pacf_to_acf_ladj_lp(col(beta_p, n)); 
-  }
-  if (q > 1) for (n in 1:N_series) {
-    pacf_to_acf_ladj_lp(col(beta_q, n)); 
-  }
+  #if (p > 1) for (n in 1:N_series) {
+  #  pacf_to_acf_ladj_lp(col(beta_p, n)); 
+  #}
+  #if (q > 1) for (n in 1:N_series) {
+  #  pacf_to_acf_ladj_lp(col(beta_q, n)); 
+  #}
   L_omega_garch ~ lkj_corr_cholesky(1);
 
   // ----- TIME SERIES ------
@@ -299,7 +303,7 @@ model {
 }
 
 generated quantities {
-  matrix[periods_to_predict, N_series]             log_predicted_prices; 
+  matrix[periods_to_predict, N_series]             log_prices_hat; 
   matrix[periods_to_predict, N_series]             delta_hat; // Trend at time t
   matrix[periods_to_predict, N_series]             tau_hat_all;
   matrix[periods_to_predict, N_series]             omega_hat; // Cyclicality at time t
@@ -310,6 +314,8 @@ generated quantities {
   matrix[periods_to_predict, N_series]             kappa_hat;
   matrix[periods_to_predict, N_series]             kappa_star_hat; 
   matrix[periods_to_predict, N_series]             w_t_hat[N_seasonality];
+  matrix[N_series, N_series]                       trend_corr = crossprod(L_omega_ar);
+  matrix[N_series, N_series]                       innovation_corr = crossprod(L_omega_garch);
   
   for (t in 1:periods_to_predict) {
     nu_ar_hat[t] = multi_normal_cholesky_rng(to_vector(zero_vector), L_Omega_ar)';
@@ -392,9 +398,9 @@ generated quantities {
     epsilon_hat = block(epsilon_temp, q + 1, 1, periods_to_predict, N_series); 
   }
   
-  log_predicted_prices[1] = log_prices_hat[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1] + epsilon_hat[1];
+  log_prices_hat[1] = log_prices[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1] + epsilon_hat[1];
   for (t in 2:periods_to_predict) {
-    log_predicted_prices[t] = log_predicted_prices[t-1] + delta_hat[t] + tau_hat_all[t] + omega_hat[t] + epsilon_hat[t];
+    log_prices_hat[t] = log_prices_hat[t-1] + delta_hat[t] + tau_hat_all[t] + omega_hat[t] + epsilon_hat[t];
   }
 }
 

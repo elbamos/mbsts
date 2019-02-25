@@ -395,7 +395,7 @@ price_forecast %>%
     x > limits[2] ~ limits[2], 
     x < limits[1] ~ limits[1], 
     TRUE ~ x
-  ))
+  )) + ggtitle("Forecasted Prices")
 ```
 
 ### Combined
@@ -527,13 +527,14 @@ true_trends <- omega_trend %>%
 
 ```{r show_trend_corr}
 trend_corr_hat %>%
-  dplyr::filter(series1 != series2) %>%
+  dplyr::filter(series1 > series2) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=100) +
   geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
   geom_vline(data=true_trends, aes(xintercept=.value), color="blue", size=0.2) +
-  facet_grid(series1 ~ series2) +
+  facet_grid(series1 ~ series2, scales="free_y") +
   theme_minimal() + 
+  scale_x_continuous(limits=c(-1, 1)) +
   ggtitle("Trend Correlations")
 ```
 
@@ -551,7 +552,7 @@ true_innovations <- omega_epsilon %>%
 
 ```{r show_innovation_corr}
 innovation_corr_hat %>%
-  dplyr::filter(series1 != series2) %>%
+  dplyr::filter(series1 > series2) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=100) +
   geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +

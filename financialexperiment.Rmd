@@ -1,6 +1,14 @@
 ---
-title: "R Notebook"
+title: "Financial Time Series"
 output: html_notebook
+params:
+  tickers: !r c("AAPL", "MSFT", "AMD", "INTL", "GE", "GM", "SHLD")
+  from_date: !r as.Date("2018-06-06")
+  ar: 2
+  p: 2
+  q: 2
+  s: !r c(5, 20)
+  periods_to_predict: 30 
 ---
 
 ```{r setup, include=FALSE}
@@ -22,9 +30,9 @@ library(pdfetch)
 ```
 
 ```{r define_tickers}
-tickers <- c("AAPL", "MSFT", "AMD", "INTL", "GE", "GM", "SHLD", "GES", "WSO", "SNAP")
-from <- as.Date("2018-06-01")
-leave_out <- 120
+tickers <- c(params$tickers, "SPY", "^VIX")
+from <- params$from_date
+leave_out <- params$periods_to_predict
 ```
 
 ```{r vis_prices}
@@ -37,45 +45,57 @@ data <- pdfetch_YAHOO(tickers, fields="adjclose", from=from, to=Sys.Date()) %>%
 data %>%
   ggplot(aes(x=period, y=y, color=series)) +
   geom_line() +
+  scale_y_log10() +
   theme_minimal()
 ```
 
+
 ```{r prepare_data}
-data %<>% arrange(period, series) %>% mutate(id = 1:n(), weight=1)
-predictors <- matrix(rep(0, (max(data$period) - leave_out) * 2), ncol=2)
+vix <- data %>%
+  dplyr::filter(series == "X.VIX") %>%
+  arrange(period) %>% 
+  dplyr::filter(period < max(data$period) - leave_out)
+
+spy <- data %>%
+  dplyr::filter(series == "SPY") %>%
+  arrange(period) %>% 
+  dplyr::filter(period < max(data$period) - leave_out)
+
+prices_gathered <- data %>% 
+  dplyr::filter(series != "X.VIX") %>% 
+  arrange(period, series) %>% 
+  mutate(id = 1:n())
+
 stan_data <- compose_data(
                           # The data
-                          data %>% 
+                          prices_gathered %>% 
                             dplyr::select(-id) %>% 
                             dplyr::filter(period < max(data$period) - leave_out), 
-                          x=predictors, 
-                          N_periods = max(data$period) - leave_out,
-                          N_features = ncol(predictors),
+                          vix = vix$y, 
+                          sp500 = spy$y, 
+                          N_periods = max(data$period) - leave_out - 1,
                           # Parameters controlling the model 
                           periods_to_predict = leave_out, 
-                          p = 3, 
-                          q = 3, 
-                          ar = 3, 
+                          p = params$p, 
+                          q = params$q, 
+                          ar = params$ar, 
                           period_scale = (max(data$period) / (as.numeric(Sys.Date() - from) / 365)) * 8, 
-                          s = c(5, 20),
-                          N_seasonality = 2,
+                          s = params$s,
+                          N_seasonality = length(params$s),
                           cyclicality_prior = 250 * 5, 
-                          # Parameters controlling hierarchical shrinkage
-                          nu = 3, 
-                          m0 = .4,
                           .n_name = n_prefix("N"))
 ```
 
 
 ```{r model}
-model <- stan_model("./mbsts.stan")
+model <- stan_model("./mbsts_fin.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=4, iter=2000, cores=4,
+samples <- sampling(model, data=stan_data, chains=3, iter=2000, cores=4,
                     #control=list(adapt_delta=0.9, max_treedepth=15), 
                     init="0"
-                    ) %>% recover_types(data)
+                    ) %>% recover_types(prices_gathered)
 ```
 
 # Inspect Model
@@ -92,7 +112,7 @@ y_hat <- samples %>% gather_draws(log_y_hat[id]) %>%
 ```{r residuals}
 y_hat %>% 
   dplyr::select(id, .value) %>%
-  inner_join(data) %>% 
+  inner_join(prices_gathered) %>% 
   mutate(
     error = .value - y
   ) %>%
@@ -112,7 +132,7 @@ y_hat %>%
 ```
 
 ```{r visualize_predictions}
-data %>% dplyr::select(id, y, series) %>%
+prices_gathered %>% dplyr::select(id, y, series) %>%
   inner_join(y_hat %>% 
                group_by(id) %>%
                summarize(y_hat = mean(.value))) %>% group_by(series) %>% 
@@ -129,11 +149,12 @@ data %>% dplyr::select(id, y, series) %>%
 ### Recovered Time Series
 
 ```{r recover_time_series}
-periodic_price_hat <- samples %>% gather_draws(log_prices_hat[period, series])
+periodic_price_hat <- samples %>% gather_draws(log_prices[period, series])
 ```
 
 ```{r time_series_by_chain}
 mean_periodic_price_hat <- periodic_price_hat %>%
+  dplyr::filter(is.finite(.value)) %>%
   group_by(period, series) %>%
   summarize(
     y_hat = exp(mean(.value))
@@ -141,12 +162,13 @@ mean_periodic_price_hat <- periodic_price_hat %>%
   mutate(.chain = as.character("mean_hat"))
 
 periodic_price_hat %>%
+  dplyr::filter(is.finite(.value)) %>% 
   group_by(period, series, .chain) %>%
   summarize(
     y_hat = exp(mean(.value))
   ) %>%
   mutate(.chain = as.character(.chain)) %>%
-  bind_rows(data %>% mutate(.chain="gen") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
+  bind_rows(prices_gathered %>% mutate(.chain="gen") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
   mutate(alpha = case_when(
     .chain %in% c("gen", "mean_hat") ~ .8, 
     TRUE ~ .2
@@ -161,7 +183,7 @@ periodic_price_hat %>%
 
 ```{r gather_price_forecast}
 price_forecast <- samples %>% 
-  gather_draws(log_predicted_prices[period, series]) 
+  gather_draws(log_prices_hat[period, series]) 
 ```
 
 ```{r visualize_price_forceast}
@@ -170,39 +192,95 @@ true_future <- data %>%
   mutate(period = period - (max(data$period) - leave_out))
   
 
-price_forecast %>% 
-  mutate(price = exp(.value)) %>%
-  group_by(series) %>% 
-  ggplot(aes(x = period, y=price, group=series, color=series)) +
-  stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
-  geom_line(data=true_future, aes(x=period, y=y, color=series)) +
+price_forecast %>%
+  dplyr::filter(is.finite(expm1(.value))) %>%
+  ungroup() %>%
+  group_by(series, period) %>%
+  summarize(y = expm1(mean(.value))) %>%
+  mutate(chain = "mean_hat") %>% 
+  bind_rows(true_future %>% mutate(chain="gen")) %>%
+  ggplot(aes(x=period, y=y, color=series, linetype=chain)) +
+  geom_line() + 
+  geom_lineribbon(alpha=0.3, size=0.5, data=price_forecast %>% 
+                    dplyr::filter(is.finite(.value)) %>%
+                    mutate(y=expm1(.value), chain="median") %>%
+                    ungroup() %>%
+                    dplyr::select(series, period, y, chain) %>% 
+                    group_by(period, series, chain) %>% 
+                    median_qi(y, .width=c(0.2, 0.3, 0.66))
+                    ) +
   scale_fill_brewer("Confidence", palette="Blues") +
-  scale_y_continuous(limits=c(0, 500)) +
-  #scale_y_log10() +
-  theme_minimal()
+  theme_minimal() +
+  scale_y_continuous(limits=c(0, 500), oob=function(x, limits) case_when(
+    x > limits[2] ~ limits[2], 
+    x < limits[1] ~ limits[1], 
+    TRUE ~ x
+  )) + 
+  ggtitle("Forecasted Prices")
 ```
 
 ### Combined Plot
 
 ```{r combined_plot}
-  bind_rows(data %>% mutate(.chain="Actual") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
+bind_rows(prices_gathered %>% 
+            mutate(.chain="Actual") %>% 
+            rename(y_hat=y), 
+          mean_periodic_price_hat,
+          price_forecast %>%
+            dplyr::filter(is.finite(expm1(.value))) %>%
+            ungroup() %>%
+            mutate(period = period + max(mean_periodic_price_hat$period)) %>%
+            group_by(series, period) %>%
+            summarize(y_hat = expm1(mean(.value))) %>%
+            mutate(.chain = "forecast")) %>% 
+  #dplyr::filter(.chain %in% c("forecast")) %>% 
+  ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain)) +
+  geom_lineribbon(alpha=0.2, size=0.5, data=price_forecast %>% 
+                  dplyr::filter(is.finite(.value)) %>%
+                  ungroup() %>%
+                  mutate(
+                    y_hat=expm1(.value), 
+                    .chain="median",
+                    period = period + max(mean_periodic_price_hat$period)
+                  ) %>%
+                  dplyr::select(series, period, y_hat, .chain) %>% 
+                  group_by(period, series, .chain) %>% 
+                  median_qi(y_hat, .width=c(0.1, 0.2, 0.3))
+                  ) +
+  geom_line(size=0.5, alpha=0.8) +
+  scale_fill_brewer("Confidence", palette="Blues") +
+  scale_y_continuous(limits=c(0, 300), oob=function(x, limits) case_when(
+    x > limits[2] ~ limits[2], 
+    x < limits[1] ~ limits[1], 
+    TRUE ~ x
+  )) +
+  theme_minimal() +
+  ggtitle("Reconstructed Time Series and Forecast vs. Actual")
+```
+
+```{r other_combined_plot}
+bind_rows(data %>% mutate(.chain="Actual") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
   dplyr::filter(.chain %in% c("Actual", "mean_hat")) %>% 
   ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain)) +
   geom_line(size=0.5) +
-  stat_lineribbon(data=price_forecast %>% 
+  geom_line(data=price_forecast %>% 
     ungroup() %>% 
-    mutate(price = exp(.value), 
-           period = period + (max(data$period) - leave_out)) %>%
+    dplyr::filter(is.finite(.value)) %>% 
+    group_by(series, period) %>%
+    summarize(y_hat = exp(mean(.value))) %>% 
+    mutate(
+      period = period + (max(data$period) - leave_out),
+      .chain = "forecast"
+    ) %>%
     group_by(series), 
-    aes(x = period, y=price, group=series, color=series), 
-    .width=c(0.2, 0.3, 0.66), alpha=0.1, color="darkblue", size=0.1) +
+    alpha=0.6, color="darkblue", size=0.1) +
   scale_fill_brewer("Confidence", palette="Blues") +
-  scale_y_continuous(limits=c(0, 300)) +
+  scale_y_log10(limits=c(1, 300)) +
+  #scale_y_continuous(limits=c(0, 300)) +
   theme_minimal() +
   ggtitle("Reconstructed Time Series and Forecast vs. Actual", 
           subtitle="Predicting 120 days of closing prices from 60 days of data")
 ```
-
 
 ## Components 
 
@@ -254,6 +332,75 @@ bind_rows(components_by_chain, components_mean) %>%
   ggtitle("Components of Price Movements (By Chain)")
 ```
 
+### Components in Prediction Period
+
+```{r prediction_components}
+prediction_components <- samples %>%  gather_draws(delta_hat[period, series], tau_hat_all[period, series], omega_hat[period, series], epsilon_hat[period, series])  %>% 
+  ungroup() %>% 
+  mutate(
+    component = case_when(
+      .variable == "delta_hat" ~ "trends", 
+      .variable == "epsilon_hat" ~ "innovations", 
+      .variable == "tau_hat_all" ~ "seasonality", 
+      .variable == "omega_hat" ~ "cyclicality", 
+      .variable == "xi_hat" ~ "predictors"
+    )
+  )
+
+predictions_mean <- prediction_components %>%
+  ungroup() %>%
+  group_by(period, series, component) %>%
+  summarize(.value = mean(.value)) %>% 
+  mutate(.chain = "mean_hat")
+
+predictions_mean %>%
+  ggplot(aes(x = period, y = .value, color=component)) +
+  facet_grid(series ~ ., scales="free_y") +
+  geom_line(size=0.2) +
+  theme_minimal() +
+  ggtitle("Components of Price Movements (Means) in Forecast")
+```
+
+### Price Movements in Forecast
+
+```{r price_movements_in_forecast}
+prediction_components %>%
+  dplyr::filter(is.finite(.value)) %>% 
+  ungroup() %>%
+  group_by(series, period, .draw) %>% 
+  summarize(
+    movement = sum(.value)
+  ) %>%
+  group_by(series, period) %>%
+  summarize(
+    mean_movement = mean(movement)
+  ) %>%
+  ggplot(aes(x=period, y=mean_movement)) +
+  geom_line() +
+  facet_grid(series ~ .) +
+  theme_minimal()
+```
+
+```{r cum_price_movements_in_forecast}
+prediction_components %>%
+  dplyr::filter(is.finite(.value)) %>% 
+  ungroup() %>%
+  group_by(series, period, .draw) %>% 
+  summarize(
+    movement = sum(.value)
+  ) %>%
+  group_by(series, period) %>%
+  summarize(
+    mean_movement = mean(movement)
+  ) %>%
+  arrange(period) %>%
+  mutate(mean_movement = cumsum(mean_movement)) %>% 
+  ggplot(aes(x=period, y=mean_movement)) +
+  geom_line() +
+  facet_grid(series ~ .) +
+  theme_minimal()
+```
+
 ### Cyclicality
 
 ```{r cyclicality}
@@ -286,12 +433,12 @@ true_trends <- omega_trend %>%
 
 ```{r show_trend_corr}
 trend_corr_hat %>%
-  dplyr::filter(series1 != series2) %>%
+  dplyr::filter(series1 > series2) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=100) +
   geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
-  geom_vline(data=true_trends, aes(xintercept=.value), color="blue", size=0.2) +
-  facet_grid(series1 ~ series2) +
+  facet_grid(series1 ~ series2, scales="free_y") +
+  scale_x_continuous(limits=c(-1, 1)) +
   theme_minimal() + 
   ggtitle("Trend Correlations")
 ```
@@ -300,22 +447,16 @@ trend_corr_hat %>%
 
 ```{r recover_innovation_correlations}
 innovation_corr_hat <- samples %>% gather_draws(innovation_corr[series1, series2])
-
-true_innovations <- omega_epsilon %>%
-  data.frame() %>%
-  set_colnames(1:ncol(omega_trend)) %>%
-  mutate(series1 = 1:n()) %>%
-  gather(key="series2", value=".value", -series1)
 ```
 
 ```{r show_innovation_corr}
 innovation_corr_hat %>%
-  dplyr::filter(series1 != series2) %>%
+  dplyr::filter(series1 > series2) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=100) +
   geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
-  geom_vline(data=true_innovations, aes(xintercept=.value), color="blue", size=0.2) +
-  facet_grid(series1 ~ series2) +
+  facet_grid(series1 ~ series2, scales="free_y") +
+  scale_x_continuous(limits=c(-1, 1)) +
   theme_minimal() + 
   ggtitle("Innovation Correlations")
 ```
@@ -360,5 +501,20 @@ volatilities_hat %>%
   ggtitle("Estimated Volatilities and Baselines")
 ```
 
+
+## Vix Reconstruction
+
+```{r vix}
+vix_hat <- samples %>% gather_draws(vix_hat[forecast_period])
+
+bind_rows(
+  vix %>% dplyr::select(y) %>% mutate(.chain="actual"), 
+  vix_hat %>% dplyr::select(y = .value, .chain) %>% mutate(.chain = as.character(.chain))
+) %>% 
+  ggplot(aes(x=y)) + 
+  geom_density() +
+  facet_wrap(~ .chain) + 
+  theme_minimal()
+```
 
 # DONE

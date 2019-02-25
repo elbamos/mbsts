@@ -30,15 +30,6 @@ functions {
     return -out;
   }
   
-  void pacf_to_acf_ladj_lp(vector r) {
-    for (n in 1:num_elements(r)) {
-      target += log(1 - pow(r[n], 2)) * (.5 * (n-1)); 
-    }
-    for (n in 1:(num_elements(r)/2)) {
-      target += log(1 + r[2 * n]);
-    }
-  }
-  
   matrix constrain_stationary(matrix x) {
     matrix[cols(x), rows(x)]  out;
     for (n in 1:cols(x)) {
@@ -53,8 +44,7 @@ data {
   int<lower=2> N; // Number of price points
   int<lower=2> N_series; // Number of price series
   int<lower=2> N_periods; // Number of periods
-  int<lower=1> N_features; // Number of features in the regression
-  
+
   // Parameters controlling the model 
   int<lower=2> periods_to_predict;
   int<lower=1> ar; // AR period for the trend
@@ -69,8 +59,9 @@ data {
   vector<lower=0>[N]                         y;
   int<lower=1,upper=N_periods>               period[N];
   int<lower=1,upper=N_series>                series[N];
-  vector<lower=0>[N]                         weight;
-  matrix[N_periods, N_features]              x; // Regression predictors
+
+  vector<lower=0>[N_periods]                 sp500;
+  vector<lower=0,upper=100>[N_periods]       vix; 
 }
 
 transformed data {
@@ -78,7 +69,6 @@ transformed data {
   real<lower=0>                       min_price =  log1p(min(y));
   real<lower=0>                       max_price = log1p(max(y));
   row_vector[N_series]                zero_vector = rep_row_vector(0, N_series);
-  vector<lower=0>[N]                  inv_weights;
   real<lower=0>                       inv_period_scale = 1.0 / period_scale; 
   real                                min_beta_ar;
   real                                min_p;
@@ -86,6 +76,9 @@ transformed data {
   real                                lambda_mean = 2 / cyclicality_prior; 
   real                                lambda_a = -lambda_mean * 2 / (lambda_mean - 1); 
   int                                 max_s = max(s) - 1;
+  // Predictors
+  matrix[N_periods-1, 2]                      predictors; 
+  real                                mean_vix = mean(vix);
   
   if (ar == 1) min_beta_ar = 0;
   else min_beta_ar = -1;
@@ -96,7 +89,12 @@ transformed data {
 
   for (n in 1:N) {
     log_y[n] = log1p(y[n]);
-    inv_weights[n] = 1.0 / weight[n];
+  }
+  
+  {
+    vector[N_periods - 1] spdiff = log(tail(sp500, N_periods - 1) ./ head(sp500, N_periods -1) );
+    vector[N_periods - 1] vixdif = tail(vix, N_periods - 1) - mean_vix;
+    predictors = append_col(spdiff, vixdif);
   }
 }
 
@@ -125,7 +123,7 @@ parameters {
   matrix[N_periods - 1, N_series]                     kappa_star; // Random changes in counter-cyclicality
   
   // REGRESSION
-  matrix[N_features, N_series]                        beta_xi; // Coefficients of the regression parameters
+  matrix[2, N_series - 1]                    beta_xi; // Coefficients of the regression parameters
   
   // INNOVATIONS
   matrix[N_periods-1, N_series]                       epsilon; // Innovations
@@ -134,6 +132,9 @@ parameters {
   matrix<lower=min_p,upper=1>[p, N_series]            beta_p; // Univariate GARCH coefficients on prior volatility
   matrix<lower=min_q,upper=1>[q, N_series]            beta_q; // Univariate GARCH coefficients on prior innovations
   cholesky_factor_corr[N_series]                      L_omega_garch; // Constant correlations among innovations 
+  
+  // Predictors
+  real<lower=0>                                       vix_alpha; 
   
   row_vector<lower=min_price,upper=max_price>[N_series] starting_prices;
 }
@@ -146,7 +147,9 @@ transformed parameters {
   matrix[N_periods-1, N_series]                       omega; // Cyclicality at time t
   matrix[N_periods-1, N_series]                       omega_star; // Anti-cyclicality at time t
   matrix[N_periods-1, N_series]                       theta; // Conditional variance of innovations 
-  matrix[N_periods, N_series]                         xi = x * beta_xi; // Predictors
+  real                                                vix_beta = vix_alpha / mean_vix; 
+  // Make sure the parameters relating the sp500 to itself and vix are 0
+  matrix[N_periods - 1, N_series]                     xi = predictors * append_col(beta_xi, rep_vector(0, 2)); // Predictors
   vector[N]                                           log_y_hat; 
   matrix[N_series, N_series]                          L_Omega_ar = make_L(theta_ar, L_omega_ar);
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
@@ -252,10 +255,6 @@ model {
   to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
   to_vector(beta_ar) ~ cauchy(0, .1); 
-  // log abs det for the stationarity transformation
-  #if (ar > 1) for (n in 1:N_series) {
-  #  pacf_to_acf_ladj_lp(col(beta_ar, n)); 
-  #}
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
   L_omega_ar ~ lkj_corr_cholesky(1);
 
@@ -277,13 +276,6 @@ model {
   omega_garch ~ cauchy(0, inv_period_scale);
   to_vector(beta_p) ~ cauchy(0, .1);
   to_vector(beta_q) ~ cauchy(0, .1); 
-  // log abs det for the stationarity transformation
-  #if (p > 1) for (n in 1:N_series) {
-  #  pacf_to_acf_ladj_lp(col(beta_p, n)); 
-  #}
-  #if (q > 1) for (n in 1:N_series) {
-  #  pacf_to_acf_ladj_lp(col(beta_q, n)); 
-  #}
   L_omega_garch ~ lkj_corr_cholesky(1);
 
   // ----- TIME SERIES ------
@@ -299,7 +291,13 @@ model {
 
   // ----- OBSERVATIONS ------
   sigma_y ~ cauchy(0, 0.01);
-  price_error ~ normal(0, inv_weights * sigma_y);
+  price_error ~ normal(0, sigma_y);
+  
+  // ----- FIT PREDICTORS ----- 
+  vix_alpha ~ cauchy(5, 2); 
+  for (t in 1:N_periods) {
+    vix[t] ~ gamma(vix_alpha, vix_beta)T[, 100]; 
+  }
 }
 
 generated quantities {
@@ -313,6 +311,8 @@ generated quantities {
   matrix[periods_to_predict, N_series]             nu_ar_hat; 
   matrix[periods_to_predict, N_series]             kappa_hat;
   matrix[periods_to_predict, N_series]             kappa_star_hat; 
+  vector[periods_to_predict]                       vix_hat; 
+  matrix[periods_to_predict, N_series]             xi_hat; 
   matrix[periods_to_predict, N_series]             w_t_hat[N_seasonality];
   matrix[N_series, N_series]                       trend_corr = crossprod(L_omega_ar);
   matrix[N_series, N_series]                       innovation_corr = crossprod(L_omega_garch);
@@ -322,6 +322,8 @@ generated quantities {
     kappa_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_cycle))';
     kappa_star_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_cycle))';
     for (ss in 1:N_seasonality) w_t_hat[ss][t] = multi_normal_rng(zero_vector', diag_matrix(theta_season[ss]))';
+    
+    vix_hat[t] = gamma_rng(vix_alpha, vix_beta); 
   }
   
   // TREND
@@ -398,9 +400,18 @@ generated quantities {
     epsilon_hat = block(epsilon_temp, q + 1, 1, periods_to_predict, N_series); 
   }
   
-  log_prices_hat[1] = log_prices[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1] + epsilon_hat[1];
-  for (t in 2:periods_to_predict) {
-    log_prices_hat[t] = log_prices_hat[t-1] + delta_hat[t] + tau_hat_all[t] + omega_hat[t] + epsilon_hat[t];
+  {
+    matrix[periods_to_predict, N_series] price_movements = delta_hat + tau_hat_all + omega_hat + epsilon_hat; 
+    xi_hat = append_col(
+      col(price_movements, N_series), 
+      vix_hat 
+    ) * append_col(beta_xi, rep_vector(0, 2)); 
+    
+    log_prices_hat[1] = log_prices[N_periods] + price_movements[1] + xi_hat[1];
+    for (t in 2:periods_to_predict) {
+      log_prices_hat[t] = log_prices_hat[t-1] + price_movements[t] + xi_hat[t];
+    }
   }
+
 }
 

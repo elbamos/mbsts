@@ -424,7 +424,7 @@ bind_rows(prices_gathered %>%
                   ) %>%
                   dplyr::select(series, period, y_hat, .chain) %>% 
                   group_by(period, series, .chain) %>% 
-                  median_qi(y_hat, .width=c(0.2, 0.3, 0.66))
+                  median_qi(y_hat, .width=c(0.05, 0.1, 0.2))
                   ) +
   geom_line(size=0.5, alpha=0.8) +
   scale_fill_brewer("Confidence", palette="Blues") +
@@ -601,5 +601,6 @@ volatilities_hat %>%
   theme_minimal() +
   ggtitle("Estimated Volatilities and Baselines")
 ```
+
 
 # DONE

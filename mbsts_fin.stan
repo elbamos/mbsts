@@ -10,7 +10,7 @@ functions {
   }
   
   row_vector make_delta_t(row_vector alpha_trend, matrix beta_trend, matrix delta_past, row_vector nu) {
-      return alpha_trend + columns_dot_product(beta_trend, delta_past) + nu;
+      return alpha_trend + columns_dot_product(beta_trend, rep_matrix(alpha_trend, rows(delta_past)) - delta_past) + nu;
   }
   
   // Enforce stationarity of lineartrend and GARCH
@@ -19,15 +19,15 @@ functions {
     matrix[n, n] y = diag_matrix(x);
     row_vector[n] out; 
 
-    for (k in 1:n) {
+    for (k in 2:n) {
       for (i in 1:(k - 1)) {
-        y[k, i] = y[k - 1, i] + x[k] * y[k - 1, k - i];
+        y[k, i] = y[k - 1, i] - x[k] * y[k - 1, k - i];
       }
     }
     for (i in 1:n) {
       out[i] = y[n, n - i + 1];
     }
-    return -out;
+    return out;
   }
   
   matrix constrain_stationary(matrix x) {
@@ -71,8 +71,6 @@ transformed data {
   row_vector[N_series]                zero_vector = rep_row_vector(0, N_series);
   real<lower=0>                       inv_period_scale = 1.0 / period_scale; 
   real                                min_beta_ar;
-  real                                min_p;
-  real                                min_q;
   real                                lambda_mean = 2 / cyclicality_prior; 
   real                                lambda_a = -lambda_mean * 2 / (lambda_mean - 1); 
   int                                 max_s = max(s) - 1;
@@ -82,10 +80,6 @@ transformed data {
   
   if (ar == 1) min_beta_ar = 0;
   else min_beta_ar = -1;
-  if (p == 1) min_p = 0;
-  else min_p = -1;
-  if (q == 1) min_q = 0;
-  else min_q = -1;
 
   for (n in 1:N) {
     log_y[n] = log1p(y[n]);
@@ -129,8 +123,8 @@ parameters {
   matrix[N_periods-1, N_series]                       epsilon; // Innovations
   row_vector<lower=0>[N_series]                       omega_garch; // Baseline volatility of innovations
   // Note that beta_p and q are converted to beta_p_c and q_c to enforce stationarity
-  matrix<lower=min_p,upper=1>[p, N_series]            beta_p; // Univariate GARCH coefficients on prior volatility
-  matrix<lower=min_q,upper=1>[q, N_series]            beta_q; // Univariate GARCH coefficients on prior innovations
+  matrix<lower=0,upper=1>[p, N_series]            beta_p; // Univariate GARCH coefficients on prior volatility
+  matrix<lower=0,upper=1>[q, N_series]            beta_q; // Univariate GARCH coefficients on prior innovations
   cholesky_factor_corr[N_series]                      L_omega_garch; // Constant correlations among innovations 
   
   // Predictors
@@ -254,7 +248,7 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
-  to_vector(beta_ar) ~ cauchy(0, .1); 
+  to_vector(beta_ar) ~ cauchy(0, .3); 
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
   L_omega_ar ~ lkj_corr_cholesky(1);
 
@@ -274,8 +268,8 @@ model {
 
   // INNOVATIONS
   omega_garch ~ cauchy(0, inv_period_scale);
-  to_vector(beta_p) ~ cauchy(0, .1);
-  to_vector(beta_q) ~ cauchy(0, .1); 
+  to_vector(beta_p) ~ cauchy(0, .3);
+  to_vector(beta_q) ~ cauchy(0, .3); 
   L_omega_garch ~ lkj_corr_cholesky(1);
 
   // ----- TIME SERIES ------

@@ -5,12 +5,8 @@ functions {
   }
   
   // Linear Trend 
-  row_vector make_delta_t_ar1(row_vector alpha_trend, row_vector beta_trend, row_vector delta_past, row_vector nu) {
-      return alpha_trend + (beta_trend .* (delta_past - alpha_trend)) + nu;
-  }
-  
   row_vector make_delta_t(row_vector alpha_trend, matrix beta_trend, matrix delta_past, row_vector nu) {
-      return alpha_trend + columns_dot_product(beta_trend, rep_matrix(alpha_trend, rows(delta_past)) - delta_past) + nu;
+      return alpha_trend + columns_dot_product(beta_trend, delta_past) + nu;
   }
   
   // Enforce stationarity of lineartrend and GARCH
@@ -55,6 +51,7 @@ data {
   int<lower=1> s[N_seasonality]; // seasonality 
   real<lower=1> period_scale; 
   real<lower=3> cyclicality_prior; // Prior estimate of the number of periods in the business cycle 
+  int<lower=0> corr_prior; 
   
   // Data 
   vector<lower=0>[N]                         y;
@@ -71,19 +68,12 @@ transformed data {
   row_vector[N_series]                zero_vector = rep_row_vector(0, N_series);
   vector<lower=0>[N]                  inv_weights;
   real<lower=0>                       inv_period_scale = 1.0 / period_scale; 
-  real                                min_beta_ar;
-  real                                min_p;
-  real                                min_q;
+  real                                min_beta_ar = ar == 1 ? 0 : -1;
+  real                                min_p = p == 1 ? 0 : -1;
+  real                                min_q = q == 1 ? 0 : -1;
   real                                lambda_mean = 2 / cyclicality_prior; 
   real                                lambda_a = -lambda_mean * 2 / (lambda_mean - 1); 
   int                                 max_s = max(s) - 1;
-  
-  if (ar == 1) min_beta_ar = 0;
-  else min_beta_ar = -1;
-  if (p == 1) min_p = 0;
-  else min_p = -1;
-  if (q == 1) min_q = 0;
-  else min_q = -1;
 
   for (n in 1:N) {
     log_y[n] = log1p(y[n]);
@@ -143,32 +133,18 @@ transformed parameters {
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
   // Constrain to stationarity
-  matrix[ar, N_series]                                beta_ar_c;
-  matrix[p, N_series]                                 beta_p_c;
-  matrix[q, N_series]                                 beta_q_c;
-  
-  // Apply stationarity constraints
-  if (ar == 1) beta_ar_c = beta_ar;
-  else  beta_ar_c = constrain_stationary(beta_ar);
-  if (p == 1) beta_p_c = beta_p;
-  else beta_p_c = constrain_stationary(beta_p);
-  if (q == 1) beta_q_c = beta_q; 
-  else beta_q_c = constrain_stationary(beta_q);
+  matrix[ar, N_series]                                beta_ar_c = ar == 1 ? beta_ar : constrain_stationary(beta_ar);
+  matrix[p, N_series]                                 beta_p_c = p == 1 ? beta_p : constrain_stationary(beta_p);
+  matrix[q, N_series]                                 beta_q_c = q == 1 ? beta_q : constrain_stationary(beta_q);
     
   // TREND
-  if (ar > 1) {
-    delta[1] = make_delta_t(alpha_ar, block(beta_ar_c, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
-    for (t in 2:(N_periods-1)) {
-      if (t <= ar) {
-        delta[t] = make_delta_t(alpha_ar, block(beta_ar_c, ar - t + 2, 1, t - 1, N_series), block(delta, 1, 1, t - 1, N_series), nu_trend[t]);
-      } else {
-        delta[t] = make_delta_t(alpha_ar, beta_ar_c, block(delta, t - ar, 1, ar, N_series), nu_trend[t]);
-      }
+  delta[1] = make_delta_t(alpha_ar, block(beta_ar_c, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
+  for (t in 2:(N_periods-1)) {
+    if (t <= ar) {
+      delta[t] = make_delta_t(alpha_ar, block(beta_ar_c, ar - t + 2, 1, t - 1, N_series), block(delta, 1, 1, t - 1, N_series), nu_trend[t]);
+    } else {
+      delta[t] = make_delta_t(alpha_ar, beta_ar_c, block(delta, t - ar, 1, ar, N_series), nu_trend[t]);
     }
-  } else {
-    row_vector[N_series] beta_ar_tmp = beta_ar_c[1];
-    delta[1] = make_delta_t_ar1(alpha_ar, beta_ar_tmp, delta_t0[1], nu_trend[1]); 
-    for (t in 2:(N_periods-1)) delta[t] = make_delta_t_ar1(alpha_ar, beta_ar_tmp, delta[t-1], nu_trend[t]); 
   }
 
 
@@ -176,12 +152,13 @@ transformed parameters {
   for (ss in 1:N_seasonality) {
     int periodicity = s[ss] - 1;
     matrix[N_periods - 1 + periodicity, N_series]  tau_s_temp; 
-    int start = max_s - periodicity; 
-    for (t in 1:periodicity) tau_s_temp[t] = w_t[ss][start + t];
-    for (t in 1:(N_periods-1)) {
-      for (d in 1:N_series) tau_s_temp[periodicity + t, d] = -sum(sub_col(tau_s_temp, t, d, periodicity));
-      tau_s_temp[periodicity + t] += w_t[ss][start + periodicity + t];
+    tau_s_temp[1] = w_t[ss][1];
+    
+    for (t in 2:(N_periods -1 + periodicity)) {
+      for (d in 1:N_series) tau_s_temp[t, d] = -sum(sub_col(tau_s_temp, max(1, t - periodicity), d, min(periodicity, t-1)));
+      tau_s_temp[t] += w_t[ss][t];
     }
+    
     tau_s[ss] = block(tau_s_temp, periodicity + 1, 1, N_periods - 1, N_series); 
     if (ss == 1) tau = tau_s[ss];
     else tau += tau_s[ss];
@@ -244,7 +221,7 @@ model {
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
   to_vector(beta_ar) ~ cauchy(0, .3); 
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
-  L_omega_ar ~ lkj_corr_cholesky(1);
+  L_omega_ar ~ lkj_corr_cholesky(corr_prior);
 
   // SEASONALITY
   for (ss in 1:N_seasonality) {
@@ -264,7 +241,7 @@ model {
   omega_garch ~ cauchy(0, inv_period_scale);
   to_vector(beta_p) ~ cauchy(0, .3);
   to_vector(beta_q) ~ cauchy(0, .3); 
-  L_omega_garch ~ lkj_corr_cholesky(1);
+  L_omega_garch ~ lkj_corr_cholesky(corr_prior);
 
   // ----- TIME SERIES ------
   // Time series
@@ -305,22 +282,18 @@ generated quantities {
   }
   
   // TREND
-  if (ar > 1) {
+  {
     matrix[ar + periods_to_predict, N_series] delta_temp = append_row(
       block(delta, N_periods - ar, 1, ar, N_series), 
       rep_matrix(0, periods_to_predict, N_series)
     ); 
     
     for (t in 1:periods_to_predict) delta_temp[ar + t] = make_delta_t(alpha_ar, beta_ar_c, 
-                                                block(delta_temp, t, 1, ar, N_series), 
-                                                nu_ar_hat[1]);
+                                                                      block(delta_temp, t, 1, ar, N_series), 
+                                                                      nu_ar_hat[1]);
                                                 
     delta_hat = block(delta_temp, ar + 1, 1, periods_to_predict, N_series); 
-  } else {
-    row_vector[N_series] beta_ar_tmp = beta_ar_c[1];
-    delta_hat[1] = make_delta_t_ar1(alpha_ar, beta_ar_tmp, delta[N_periods-1], nu_ar_hat[1]);
-    for (t in 2:periods_to_predict) delta_hat[t] = make_delta_t_ar1(alpha_ar, beta_ar_tmp, delta_hat[t-1], nu_ar_hat[t]);
-  }
+  } 
 
   
   // SEASONALITY

@@ -5,7 +5,7 @@ date: "2/7/2019"
 output: html_document
 params:
   ####### Parameters on data generation
-  P: !r 52                  # Number of periods
+  P: !r 50                  # Number of periods
   use_sampled: F                  # Whether to use the exact prices generated or sample
   N: 700                          # Number of sampled prices if use_sampled = T
   S: 5                           # Number of price series
@@ -17,8 +17,9 @@ params:
   # its reasonably expected that a price may double; e.g., 52 for weekly prices
   p: 3                            
   q: 3
-  ar: 3                           # Number of periods for trend model
-  s: !r c(5, 20)              # Seasonality periods
+  ar: 1                           # Number of periods for trend model
+  s: !r c(2)              # Seasonality periods
+  corr_prior: 4
   ###### Parameters controlling hierarchical shrinkage 
   nu: 3
   m0: .05                         # Prior on proportion of coefficients that are relevant
@@ -56,7 +57,7 @@ period_vline <- data.frame(xintercept=params$P)
 
 ```{r trends}
 theta_trend <- abs(rcauchy(params$S, 0, .01)) / params$period_scale
-omega_trend <- rlkjcorr(1, params$S)
+omega_trend <- rlkjcorr(1, params$S, eta=params$corr_prior)
 alpha_trend <- rnorm(params$S, 0, .01) / params$period_scale
 #beta_trend <- pmin(abs(matrix(rnorm(params$S * params$ar, sd=0.1),  ncol=params$S)), .3) 
 L_omega_trend <- t(chol(omega_trend))
@@ -154,7 +155,7 @@ omega %>% data.frame() %>%
 
 ```{r innovations}
 theta_epsilon <- abs(rcauchy(params$S, 0, .05)) / params$period_scale
-omega_epsilon <- rlkjcorr(1, params$S)
+omega_epsilon <- rlkjcorr(1, params$S, eta=params$corr_prior)
 beta_p <- abs(rnorm(params$S, sd=0.2))
 beta_q <- abs(rnorm(params$S, sd=0.2))
 
@@ -214,9 +215,10 @@ assemble_stan_data <- function(prices, predictors) compose_data(
                           q = params$q, 
                           ar = params$ar, 
                           period_scale = params$period_scale, 
-                          s = params$s,
+                          s = array(params$s, dim = length(params$s)),
                           N_seasonality = length(params$s),
                           cyclicality_prior = 52 * 5, 
+                          corr_prior = params$corr_prior,
                           # Parameters controlling hierarchical shrinkage
                           nu = params$nu, 
                           m0 = params$m0,
@@ -276,7 +278,8 @@ model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=2, iter=2000, init="0", cores=2) %>% recover_types(price_set)
+samples <- sampling(model, data=stan_data, chains=2, iter=1000, init="0", cores=2
+                    ) %>% recover_types(price_set)
 ```
 
 # Inspect Model
@@ -387,7 +390,7 @@ price_forecast %>%
                     ungroup() %>%
                     dplyr::select(series, period, y, chain) %>% 
                     group_by(period, series, chain) %>% 
-                    median_qi(y, .width=c(0.2, 0.3, 0.66))
+                    median_qi(y, .width=c(0.05, 0.1, 0.2))
                     ) +
   scale_fill_brewer("Confidence", palette="Blues") +
   theme_minimal() +

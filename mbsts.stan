@@ -69,8 +69,6 @@ transformed data {
   vector<lower=0>[N]                  inv_weights;
   real<lower=0>                       inv_period_scale = 1.0 / period_scale; 
   real                                min_beta_ar = ar == 1 ? 0 : -1;
-  real                                min_p = p == 1 ? 0 : -1;
-  real                                min_q = q == 1 ? 0 : -1;
   real                                lambda_mean = 2 / cyclicality_prior; 
   real                                lambda_a = -lambda_mean * 2 / (lambda_mean - 1); 
   int                                 max_s = max(s) - 1;

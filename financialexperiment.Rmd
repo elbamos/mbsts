@@ -3,11 +3,12 @@ title: "Financial Time Series"
 output: html_notebook
 params:
   tickers: !r c("AAPL", "MSFT", "AMD", "INTL", "GE", "GM", "SHLD")
-  from_date: !r as.Date("2018-06-06")
+  from_date: !r as.Date("2018-01-01")
   ar: 2
   p: 2
   q: 2
   s: !r c(5, 20)
+  corr_prior: 4
   periods_to_predict: 30 
 ---
 
@@ -51,36 +52,28 @@ data %>%
 
 
 ```{r prepare_data}
-vix <- data %>%
-  dplyr::filter(series == "X.VIX") %>%
-  arrange(period) %>% 
-  dplyr::filter(period < max(data$period) - leave_out)
-
-spy <- data %>%
-  dplyr::filter(series == "SPY") %>%
-  arrange(period) %>% 
-  dplyr::filter(period < max(data$period) - leave_out)
-
 prices_gathered <- data %>% 
-  dplyr::filter(series != "X.VIX") %>% 
   arrange(period, series) %>% 
-  mutate(id = 1:n())
+  mutate(id = 1:n(), weight=1)
+
+predictors <- matrix(0, ncol=1, nrow=max(data$period) - leave_out - 1)
 
 stan_data <- compose_data(
                           # The data
                           prices_gathered %>% 
                             dplyr::select(-id) %>% 
                             dplyr::filter(period < max(data$period) - leave_out), 
-                          vix = vix$y, 
-                          sp500 = spy$y, 
                           N_periods = max(data$period) - leave_out - 1,
+                          x = predictors,
+                          N_features = ncol(predictors),
                           # Parameters controlling the model 
                           periods_to_predict = leave_out, 
+                          corr_prior = params$corr_prior,
                           p = params$p, 
                           q = params$q, 
                           ar = params$ar, 
                           period_scale = (max(data$period) / (as.numeric(Sys.Date() - from) / 365)) * 8, 
-                          s = params$s,
+                          s = array(params$s, dim=length(params$s)),
                           N_seasonality = length(params$s),
                           cyclicality_prior = 250 * 5, 
                           .n_name = n_prefix("N"))
@@ -88,11 +81,11 @@ stan_data <- compose_data(
 
 
 ```{r model}
-model <- stan_model("./mbsts_fin.stan")
+model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=3, iter=2000, cores=4,
+samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=4,
                     #control=list(adapt_delta=0.9, max_treedepth=15), 
                     init="0"
                     ) %>% recover_types(prices_gathered)

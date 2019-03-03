@@ -5,20 +5,21 @@ date: "2/7/2019"
 output: html_document
 params:
   ####### Parameters on data generation
-  P: 52                           # Number of periods
+  P: !r 50                  # Number of periods
   use_sampled: F                  # Whether to use the exact prices generated or sample
   N: 700                          # Number of sampled prices if use_sampled = T
-  S: 5                            # Number of price series
+  S: 5                           # Number of price series
   F: 2                            # Number of features for regression
   ###### Parameters controlling the model 
-  periods_to_predict: 12
+  periods_to_predict: 30
   period_scale: 52                # Prior on the scale of price movements
   # a reasonable starting place is the number of periods over which 
   # its reasonably expected that a price may double; e.g., 52 for weekly prices
-  p: 2                            
-  q: 2
-  ar: 2                           # Number of periods for trend model
-  s: !r c(4, 12)                  # Seasonality periods
+  p: 3                            
+  q: 3
+  ar: 1                           # Number of periods for trend model
+  s: !r c(2)              # Seasonality periods
+  corr_prior: 4
   ###### Parameters controlling hierarchical shrinkage 
   nu: 3
   m0: .05                         # Prior on proportion of coefficients that are relevant
@@ -48,29 +49,28 @@ library(marima)
 # Generate Fake Data 
 
 ```{r seed}
-set.seed(19746)
-pad <- 100
-periods_to_generate <- params$P + params$periods_to_predict + pad
+set.seed(1974)
+periods_to_generate <- params$P + params$periods_to_predict
 period_vline <- data.frame(xintercept=params$P)
 ```
 
 ## Trends
 
 ```{r trends}
-theta_trend <- abs(rcauchy(params$S, 0, .05)) / params$period_scale
-omega_trend <- rlkjcorr(1, params$S)
-alpha_trend <- rnorm(params$S, 0, .1) / params$period_scale
+theta_trend <- abs(rcauchy(params$S, 0, .01)) / params$period_scale
+omega_trend <- rlkjcorr(1, params$S, eta=params$corr_prior)
+alpha_trend <- rnorm(params$S, 0, .01) / params$period_scale
 #beta_trend <- pmin(abs(matrix(rnorm(params$S * params$ar, sd=0.1),  ncol=params$S)), .3) 
 L_omega_trend <- t(chol(omega_trend))
+beta_trend <- abs(rcauchy(params$S, 0, scale=0.1))
 
-delta <- marima.sim(kvar=5,
+delta <- marima.sim(kvar=params$S,
                  ar.model=abind(diag(rep(1, params$S)), 
-                                matrix(rep(0, params$S^2), ncol=params$S), 
-                                matrix(rcauchy(params$S^2, 0, scale=0.1), ncol=params$S), along=3),
+                                diag(beta_trend), along=3),
                  averages=alpha_trend, 
                  resid.cov=crossprod(crossprod(diag(sqrt(theta_trend)), L_omega_trend)),
-                 nstart=500, 
-                 nsim=params$P + params$periods_to_predict)
+                 nstart=100, 
+                 nsim=periods_to_generate)
 
 delta %>% data.frame() %>%
   set_colnames(paste("series", 1:params$S, sep="_")) %>%
@@ -87,10 +87,11 @@ delta %>% data.frame() %>%
 
 ```{r seasonality}
 theta_season <- abs(rcauchy(params$S, scale=.1)) / params$period_scale
-w <- matrix(rnorm(params$S * periods_to_generate, sd=theta_season^2), byrow=T, ncol=params$S)
+seasoning <- 500
+w <- matrix(rnorm(params$S * (periods_to_generate + seasoning), sd=theta_season^2), byrow=T, ncol=params$S)
 tau <- list()
 
-for (t in 1:periods_to_generate) {
+for (t in 1:(periods_to_generate + seasoning)) {
   if (t < params$s[1]) tau <- c(tau, list(w[t, ]))
   else {
     prior_tau <- do.call(rbind, tau[(t - params$s[1] + 1):(t-1)])
@@ -99,7 +100,7 @@ for (t in 1:periods_to_generate) {
 }
 
 tau <- do.call(rbind, tau)
-tau <- tau[(pad+1):nrow(tau),]
+tau <- tau[(seasoning + 1):nrow(tau), ]
 
 tau %>% data.frame() %>%
   set_colnames(paste("series", 1:params$S, sep="_")) %>%
@@ -116,7 +117,7 @@ tau %>% data.frame() %>%
 ## Cyclicality
 
 ```{r cyclicality}
-lambda <- 2 * pi / runif(params$S, 26, 150)
+lambda <- 2 * pi / runif(params$S, 250, 1000)
 rho <- runif(params$S, 0, 1)
 theta_cycle <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
 kappa <- matrix(rnorm(params$S * periods_to_generate, sd = theta_cycle), byrow = T, ncol=params$S)
@@ -155,8 +156,8 @@ omega %>% data.frame() %>%
 ## Innovations
 
 ```{r innovations}
-theta_epsilon <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
-omega_epsilon <- rlkjcorr(1, params$S)
+theta_epsilon <- abs(rcauchy(params$S, 0, .05)) / params$period_scale
+omega_epsilon <- rlkjcorr(1, params$S, eta=params$corr_prior)
 beta_p <- abs(rnorm(params$S, sd=0.2))
 beta_q <- abs(rnorm(params$S, sd=0.2))
 
@@ -217,9 +218,10 @@ assemble_stan_data <- function(prices, predictors) compose_data(
                           q = params$q, 
                           ar = params$ar, 
                           period_scale = params$period_scale, 
-                          s = params$s,
+                          s = array(params$s, dim = length(params$s)),
                           N_seasonality = length(params$s),
                           cyclicality_prior = 52 * 5, 
+                          corr_prior = params$corr_prior,
                           # Parameters controlling hierarchical shrinkage
                           nu = params$nu, 
                           m0 = params$m0,
@@ -279,8 +281,7 @@ model <- stan_model("./mbsts.stan")
 ```
 
 ```{r sample}
-samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2,
-                   # control=list(adapt_delta=0.95, max_treedepth=15)
+samples <- sampling(model, data=stan_data, chains=2, iter=1000, init="0", cores=2
                     ) %>% recover_types(price_set)
 ```
 
@@ -292,7 +293,7 @@ samples <- sampling(model, data=stan_data, chains=2, iter=2000, cores=2,
 
 ```{r recover_y_hat}
 y_hat <- samples %>% gather_draws(log_y_hat[id]) %>%
-  mutate(.value = exp(.value) - 1)
+  mutate(.value = expm1(.value))
 ```
 
 ```{r residuals}
@@ -336,21 +337,23 @@ price_set %>% dplyr::select(id, y, series) %>%
 ### Recovered Time Series
 
 ```{r recover_time_series}
-periodic_price_hat <- samples %>% gather_draws(log_prices_hat[period, series])
+periodic_price_hat <- samples %>% gather_draws(log_prices[period, series])
 ```
 
 ```{r time_series_by_chain}
 mean_periodic_price_hat <- periodic_price_hat %>%
+  dplyr::filter(is.finite(expm1(.value))) %>% 
   group_by(period, series) %>%
   summarize(
-    y_hat = exp(mean(.value))
+    y_hat = expm1(mean(.value))
   ) %>%
   mutate(.chain = as.character("mean_hat"))
 
 periodic_price_hat %>%
+  dplyr::filter(is.finite(.value)) %>% 
   group_by(period, series, .chain) %>%
   summarize(
-    y_hat = exp(mean(.value))
+    y_hat = expm1(mean(.value))
   ) %>%
   mutate(.chain = as.character(.chain)) %>%
   bind_rows(prices_gathered %>% mutate(.chain="gen") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
@@ -368,7 +371,7 @@ periodic_price_hat %>%
 
 ```{r gather_price_forecast}
 price_forecast <- samples %>% 
-  gather_draws(log_predicted_prices[period, series]) 
+  gather_draws(log_prices_hat[period, series]) 
 ```
 
 ```{r visualize_price_forceast}
@@ -376,16 +379,69 @@ true_future <- prices_gathered %>%
   dplyr::filter(period > params$P) %>%
   mutate(period = period - params$P)
   
-
-price_forecast %>% 
-  mutate(price = exp(.value)) %>%
-  group_by(series) %>% 
-  ggplot(aes(x = period, y=price, group=series, color=series)) +
-  stat_lineribbon(.width=c(0.2, 0.3, 0.66), alpha=0.3, color="darkblue", size=0.5) +
-  geom_line(data=true_future, aes(x=period, y=y, color=series)) +
+price_forecast %>%
+  dplyr::filter(is.finite(expm1(.value))) %>%
+  ungroup() %>%
+  group_by(series, period) %>%
+  summarize(y = expm1(mean(.value))) %>%
+  mutate(chain = "mean_hat") %>%
+  bind_rows(true_future %>% dplyr::select(-id) %>% mutate(chain="gen")) %>%
+  ggplot(aes(x=period, y=y, color=series, linetype=chain)) +
+  geom_line() + 
+  geom_lineribbon(alpha=0.3, size=0.5, data=price_forecast %>% 
+                    dplyr::filter(is.finite(.value)) %>%
+                    mutate(y=expm1(.value), chain="median") %>%
+                    ungroup() %>%
+                    dplyr::select(series, period, y, chain) %>% 
+                    group_by(period, series, chain) %>% 
+                    median_qi(y, .width=c(0.05, 0.1, 0.2))
+                    ) +
   scale_fill_brewer("Confidence", palette="Blues") +
-  #scale_y_log10() +
-  theme_minimal()
+  theme_minimal() +
+  scale_y_continuous(limits=c(0, 5500), oob=function(x, limits) case_when(
+    x > limits[2] ~ limits[2], 
+    x < limits[1] ~ limits[1], 
+    TRUE ~ x
+  )) + ggtitle("Forecasted Prices")
+```
+
+### Combined
+
+```{r combined_plot}
+bind_rows(prices_gathered %>% 
+            mutate(.chain="Actual") %>% 
+            rename(y_hat=y), 
+          mean_periodic_price_hat,
+          price_forecast %>%
+            dplyr::filter(is.finite(expm1(.value))) %>%
+            ungroup() %>%
+            mutate(period = period + max(mean_periodic_price_hat$period)) %>%
+            group_by(series, period) %>%
+            summarize(y_hat = expm1(mean(.value))) %>%
+            mutate(.chain = "forecast")) %>% 
+  #dplyr::filter(.chain %in% c("forecast")) %>% 
+  ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain)) +
+  geom_lineribbon(alpha=0.2, size=0.5, data=price_forecast %>% 
+                  dplyr::filter(is.finite(.value)) %>%
+                  ungroup() %>%
+                  mutate(
+                    y_hat=expm1(.value), 
+                    .chain="median",
+                    period = period + max(mean_periodic_price_hat$period)
+                  ) %>%
+                  dplyr::select(series, period, y_hat, .chain) %>% 
+                  group_by(period, series, .chain) %>% 
+                  median_qi(y_hat, .width=c(0.05, 0.1, 0.2))
+                  ) +
+  geom_line(size=0.5, alpha=0.8) +
+  scale_fill_brewer("Confidence", palette="Blues") +
+  scale_y_continuous(limits=c(0, 5500), oob=function(x, limits) case_when(
+    x > limits[2] ~ limits[2], 
+    x < limits[1] ~ limits[1], 
+    TRUE ~ x
+  )) +
+  theme_minimal() +
+  ggtitle("Reconstructed Time Series and Forecast vs. Actual")
 ```
 
 ## Components 
@@ -480,13 +536,14 @@ true_trends <- omega_trend %>%
 
 ```{r show_trend_corr}
 trend_corr_hat %>%
-  dplyr::filter(series1 != series2) %>%
+  dplyr::filter(series1 > series2) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=100) +
   geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
   geom_vline(data=true_trends, aes(xintercept=.value), color="blue", size=0.2) +
-  facet_grid(series1 ~ series2) +
+  facet_grid(series1 ~ series2, scales="free_y") +
   theme_minimal() + 
+  scale_x_continuous(limits=c(-1, 1)) +
   ggtitle("Trend Correlations")
 ```
 
@@ -504,7 +561,7 @@ true_innovations <- omega_epsilon %>%
 
 ```{r show_innovation_corr}
 innovation_corr_hat %>%
-  dplyr::filter(series1 != series2) %>%
+  dplyr::filter(series1 > series2) %>%
   ggplot(aes(x = .value)) +
   geom_histogram(bins=100) +
   geom_vline(data=data.frame(xintercept=0), aes(xintercept=xintercept), color="red", size=0.2) +
@@ -534,8 +591,8 @@ shrinkage_hat %>%
 ### Visualize Coefficients
 
 ```{r visualize_coefficients}
-coefficients_hat <- samples %>% gather_draws(beta_ar[feature, series], beta_xi[feature, series], 
-                                             beta_p[feature, series], beta_q[feature, series])
+coefficients_hat <- samples %>% gather_draws(beta_ar_c[feature, series], beta_xi[feature, series], 
+                                             beta_p_c[feature, series], beta_q_c[feature, series])
 
 coefficients_hat %>%
   ggplot(aes(x = .value)) +
@@ -567,5 +624,6 @@ volatilities_hat %>%
   theme_minimal() +
   ggtitle("Estimated Volatilities and Baselines")
 ```
+
 
 # DONE

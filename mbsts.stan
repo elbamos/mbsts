@@ -214,8 +214,8 @@ transformed parameters {
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
   // Hierarchical shrinkage
   matrix[ar, N_series] beta_ar_hs = apply_hs_prior_m(beta_ar, tau0_ar, sigma_y, tau_beta_ar, lambda_m_beta_ar, c_beta_ar); 
-  matrix[ar, N_series] beta_p_hs = apply_hs_prior_m(beta_p, tau0_beta_p, sigma_y, tau_beta_p, lambda_m_beta_p, c_beta_p); 
-  matrix[ar, N_series] beta_q_hs = apply_hs_prior_m(beta_q, tau0_beta_q, sigma_y, tau_beta_q, lambda_m_beta_q, c_beta_q); 
+  matrix[p, N_series] beta_p_hs = apply_hs_prior_m(beta_p, tau0_beta_p, sigma_y, tau_beta_p, lambda_m_beta_p, c_beta_p); 
+  matrix[q, N_series] beta_q_hs = apply_hs_prior_m(beta_q, tau0_beta_q, sigma_y, tau_beta_q, lambda_m_beta_q, c_beta_q); 
   matrix[N_features, N_series] beta_xi_hs = apply_hs_prior_m(beta_xi, tau0_xi, sigma_y, tau_beta_xi, lambda_m_beta_xi, c_beta_xi); 
   vector[N_series] theta_cycle_hs = apply_hs_prior_v(theta_cycle, tau0_theta_cycle, sigma_y, tau_theta_cycle, lambda_m_theta_cycle, c_theta_cycle);
   vector[N_series] theta_season_hs[N_seasonality];
@@ -311,7 +311,7 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
-  hs_prior_lp(to_vector(beta_ar), tau_beta_ar, lambda_m_beta_ar, c_beta_ar, inv_period_scale, nu);
+  hs_prior_lp(to_vector(beta_ar), tau_beta_ar, lambda_m_beta_ar, c_beta_ar, 1, nu);
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
   L_omega_ar ~ lkj_corr_cholesky(corr_prior);
 
@@ -331,8 +331,8 @@ model {
 
   // INNOVATIONS
   omega_garch ~ cauchy(0, inv_period_scale);
-  hs_prior_lp(to_vector(beta_p), tau_beta_p, lambda_m_beta_p, c_beta_p, inv_period_scale, nu);
-  hs_prior_lp(to_vector(beta_q), tau_beta_q, lambda_m_beta_q, c_beta_q, inv_period_scale, nu);
+  hs_prior_lp(to_vector(beta_p), tau_beta_p, lambda_m_beta_p, c_beta_p, 1, nu);
+  hs_prior_lp(to_vector(beta_q), tau_beta_q, lambda_m_beta_q, c_beta_q, 1, nu);
   L_omega_garch ~ lkj_corr_cholesky(corr_prior);
 
   // ----- TIME SERIES ------

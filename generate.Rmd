@@ -17,8 +17,8 @@ params:
   # its reasonably expected that a price may double; e.g., 52 for weekly prices
   p: 3                            
   q: 3
-  ar: 1                           # Number of periods for trend model
-  s: !r c(2)              # Seasonality periods
+  ar: 3                           # Number of periods for trend model
+  s: !r c(4, 12)                  # Seasonality periods
   corr_prior: 4
   ###### Parameters controlling hierarchical shrinkage 
   nu: 3
@@ -82,17 +82,41 @@ delta %>% data.frame() %>%
   ggtitle("Generated Trends")
 ```
 
+```{r cum_trends}
+delta %>% data.frame() %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="trend", -period) %>%
+  group_by(series) %>%
+  arrange(period) %>%
+  mutate(trend = exp(cumsum(trend))) %>% 
+  ggplot(aes(x = period, y=trend, color=series)) + 
+  geom_line(size=0.5, alpha=0.4) +
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
+  theme_minimal() + 
+  ggtitle("Generated Trends (Cumulative)")
+```
+
 ## Seasonality
 
 ```{r seasonality}
-theta_season <- abs(rcauchy(params$S, scale=.1)) / params$period_scale
+theta_season <- abs(rcauchy(params$S, scale=1)) / params$period_scale
 seasoning <- 500
 w <- matrix(rnorm(params$S * (periods_to_generate + seasoning), sd=theta_season^2), byrow=T, ncol=params$S)
-tau <- list()
+tau <- c(
+  list(
+    w[1, ]
+  ), 
+  list(
+    w[2, ] - w[1, ]
+  )
+)
 
-for (t in 1:(periods_to_generate + seasoning)) {
-  if (t < params$s[1]) tau <- c(tau, list(w[t, ]))
-  else {
+for (t in 3:(periods_to_generate + seasoning)) {
+  if (t < params$s[1]) {
+    prior_tau <- do.call(rbind, tau[1:(t-1)])
+    tau <- c(tau, list(-colSums(prior_tau) + w[t, ]))
+  } else {
     prior_tau <- do.call(rbind, tau[(t - params$s[1] + 1):(t-1)])
     tau <- c(tau, list(-colSums(prior_tau) + w[t, ]))
   }
@@ -113,6 +137,20 @@ tau %>% data.frame() %>%
 
 ```
 
+```{r cum_seasonality}
+tau %>% data.frame() %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="seasonality", -period) %>%
+  group_by(series) %>%
+  arrange(period) %>%
+  mutate(seasonality = exp(cumsum(seasonality))) %>% 
+  ggplot(aes(x = period, y=seasonality, color=series)) + 
+  geom_line(size=0.5, alpha=0.4) +
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
+  theme_minimal() + 
+  ggtitle("Generated Seasonality (Cumulative)")
+```
 ## Cyclicality
 
 ```{r cyclicality}
@@ -151,6 +189,22 @@ omega %>% data.frame() %>%
   ggtitle("Generated Cyclicality")
 ```
 
+
+```{r cum_cyclicality}
+omega %>% data.frame() %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="cyclicality", -period) %>% 
+  group_by(series) %>%
+  arrange(period) %>%
+  mutate(cyclicality = exp(cumsum(cyclicality))) %>% 
+  ggplot(aes(x = period, y=cyclicality, color=series)) + 
+  geom_line(size=0.5, alpha=0.4) +
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
+  theme_minimal() + 
+  ggtitle("Generated Cyclicality (Cumulative)")
+
+```
 ## Innovations
 
 ```{r innovations}
@@ -175,6 +229,21 @@ epsilon %>% data.frame() %>%
   ggtitle("Generated Innovations")
 ```
 
+```{r cum_innovations}
+epsilon %>% data.frame() %>%
+  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+  mutate(period = 1:n()) %>%
+  gather(key="series", value="innovation", -period) %>% 
+  group_by(series) %>%
+  arrange(period) %>%
+  mutate(innovation = exp(cumsum(innovation))) %>% 
+  ggplot(aes(x = period, y=innovation, color=series)) + 
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
+  geom_line(size=0.5, alpha=0.4) +
+  theme_minimal() + 
+  ggtitle("Generated Innovations (Cumulative)")
+```
+
 ## View Final Price Series
 
 ```{r assemble_price_series}
@@ -191,7 +260,7 @@ prices <- rbind(starting_prices, price_fluctuations) %>%
 
 prices %>%
   gather(key="series", value="log_price", -period) %>%
-  mutate(price = exp(log_price) - 1) %>%
+  mutate(price = expm1(log_price)) %>%
   ggplot(aes(x = period, y = price, color=series)) + 
   geom_line(size=0.5, alpha=0.7) + 
   geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
@@ -489,6 +558,25 @@ bind_rows(components_by_chain, components_mean) %>%
   theme_minimal() +
   ggtitle("Components of Price Movements (By Chain)")
 ```
+
+```{r components_cumulative}
+bind_rows(components_by_chain, components_mean) %>%
+  mutate(alpha = case_when(
+    .chain == "mean_hat" ~ 1, 
+    TRUE ~ 0.4
+  )) %>% 
+  group_by(component, .chain, series) %>%
+  arrange(period) %>%
+  mutate(.value = cumsum(.value)) %>% 
+  ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain), alpha=I(alpha))) +
+  facet_grid(series ~ ., scales="free_y") +
+  geom_line(size=0.2) +
+  #scale_x_continuous(limits=c(0, 80)) +
+  theme_minimal() +
+  ggtitle("Cumulative Components of Price Movements (By Chain)")
+
+```
+
 
 ### Cyclicality
 

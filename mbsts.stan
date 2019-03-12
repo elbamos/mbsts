@@ -72,10 +72,17 @@ transformed data {
   real                                lambda_mean = 2 / cyclicality_prior; 
   real                                lambda_a = -lambda_mean * 2 / (lambda_mean - 1); 
   int                                 max_s = max(s) - 1;
+  // Priors for beta_ar partial autocorrelations
+  vector<lower=0>[ar]                 beta_ar_alpha;
+  vector<lower=0>[ar]                 beta_ar_beta; 
 
   for (n in 1:N) {
     log_y[n] = log1p(y[n]);
     inv_weights[n] = 1.0 / weight[n];
+  }
+  for (a in 1:ar) {
+    beta_ar_alpha[ar - a + 1] = floor((a + 1.0)/2.0); 
+    beta_ar_beta[ar - a + 1] = floor(a / 2.0) + 1; 
   }
 }
 
@@ -133,8 +140,7 @@ transformed parameters {
   // Constrain to stationarity
   matrix[ar, N_series]                                beta_ar_c = ar == 1 ? beta_ar : constrain_stationary(beta_ar);
   matrix[p, N_series]                                 beta_p_c = p == 1 ? beta_p : constrain_stationary(beta_p);
-  matrix[q, N_series]                                 beta_q_c = q == 1 ? beta_q : constrain_stationary(beta_q);
-    
+
   // TREND
   delta[1] = make_delta_t(alpha_ar, block(beta_ar_c, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
   for (t in 2:(N_periods-1)) {
@@ -188,9 +194,9 @@ transformed parameters {
       }
       
       if (t <= q) {
-        q_component = columns_dot_product(block(beta_q_c, q - t + 2, 1, t - 1, N_series), block(epsilon_squared, 1, 1, t - 1, N_series));
+        q_component = columns_dot_product(block(beta_q, q - t + 2, 1, t - 1, N_series), block(epsilon_squared, 1, 1, t - 1, N_series));
       } else {
-        q_component = columns_dot_product(beta_q_c, block(epsilon_squared, t - q, 1, q, N_series));
+        q_component = columns_dot_product(beta_q, block(epsilon_squared, t - q, 1, q, N_series));
       }
       
       theta[t] = omega_garch + p_component + q_component;
@@ -217,7 +223,11 @@ model {
   // TREND 
   to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
-  to_vector(beta_ar) ~ cauchy(0, .3); 
+  // Jones (1984) Prior on the partial autocorrelations
+#  for (ss in 1:N_series) {
+#    .5 + (col(beta_ar, ss) / 2) ~ beta(beta_ar_alpha, beta_ar_beta); 
+#  }
+  to_vector(beta_ar) ~ cauchy(0, 0.3); 
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
   L_omega_ar ~ lkj_corr_cholesky(corr_prior);
 
@@ -339,7 +349,7 @@ generated quantities {
       row_vector[N_series]  q_component;      
       
       p_component = columns_dot_product(beta_p_c, block(theta_temp, t, 1, p, N_series));
-      q_component = columns_dot_product(beta_q_c, square(block(epsilon_temp, t, 1, q, N_series)));
+      q_component = columns_dot_product(beta_q, square(block(epsilon_temp, t, 1, q, N_series)));
       
       theta_temp[t + p] = omega_garch + p_component + q_component;
       epsilon_temp[t + q] = multi_normal_cholesky_rng(zero_vector', make_L(theta_temp[t + p], L_omega_garch))';

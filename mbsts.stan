@@ -66,6 +66,7 @@ transformed data {
   real<lower=0>                       min_price =  log1p(min(y));
   real<lower=0>                       max_price = log1p(max(y));
   row_vector[N_series]                zero_vector = rep_row_vector(0, N_series);
+  vector[N_series]                    zero_vector_r = zero_vector';
   vector<lower=0>[N]                  inv_weights;
   real<lower=0>                       inv_period_scale = 1.0 / period_scale; 
   real                                min_beta_ar = ar == 1 ? 0 : -1;
@@ -74,15 +75,15 @@ transformed data {
   int                                 max_s = max(s) - 1;
   // Priors for beta_ar partial autocorrelations
   vector<lower=0>[ar]                 beta_ar_alpha;
-  vector<lower=0>[ar]                 beta_ar_beta; 
-
-  for (n in 1:N) {
-    log_y[n] = log1p(y[n]);
-    inv_weights[n] = 1.0 / weight[n];
-  }
+  vector<lower=0>[ar]                 beta_ar_beta;
   for (a in 1:ar) {
     beta_ar_alpha[ar - a + 1] = floor((a + 1.0)/2.0); 
     beta_ar_beta[ar - a + 1] = floor(a / 2.0) + 1; 
+  }
+  
+  for (n in 1:N) {
+    log_y[n] = log1p(y[n]);
+    inv_weights[n] = 1.0 / weight[n];
   }
 }
 
@@ -100,15 +101,15 @@ parameters {
   cholesky_factor_corr[N_series]                      L_omega_ar; // Correlations among trend changes
   
   // SEASONALITY
-  row_vector[N_series]                                w_t[N_seasonality, N_periods-1 + max_s]; // Random variation in seasonality
+  matrix[N_periods-1+max_s, N_series]                 w_t[N_seasonality]; // Random variation in seasonality
   vector<lower=0>[N_series]                           theta_season[N_seasonality]; // Variance in seasonality
 
   // CYCLICALITY
   row_vector<lower=0, upper=pi()>[N_series]           lambda; // Frequency
   row_vector<lower=0, upper=1>[N_series]              rho; // Damping factor
   vector<lower=0>[N_series]                           theta_cycle; // Variance in cyclicality
-  matrix[N_periods - 1, N_series]                     kappa;  // Random changes in cyclicality
-  matrix[N_periods - 1, N_series]                     kappa_star; // Random changes in counter-cyclicality
+  row_vector[N_series]                                kappa[N_periods - 1];  // Random changes in cyclicality
+  row_vector[N_series]                                kappa_star[N_periods - 1]; // Random changes in counter-cycle
   
   // REGRESSION
   matrix[N_features, N_series]                        beta_xi; // Coefficients of the regression parameters
@@ -142,14 +143,17 @@ transformed parameters {
   matrix[p, N_series]                                 beta_p_c = p == 1 ? beta_p : constrain_stationary(beta_p);
 
   // TREND
-  delta[1] = make_delta_t(alpha_ar, block(beta_ar_c, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
+  delta[1] = make_delta_t(alpha_ar, block(beta_ar, ar, 1, 1, N_series), delta_t0, nu_trend[1]);
   for (t in 2:(N_periods-1)) {
     if (t <= ar) {
-      delta[t] = make_delta_t(alpha_ar, block(beta_ar_c, ar - t + 2, 1, t - 1, N_series), block(delta, 1, 1, t - 1, N_series), nu_trend[t]);
+      delta[t] = make_delta_t(alpha_ar, 
+                              constrain_stationary(block(beta_ar, ar - t + 2, 1, t - 1, N_series)), 
+                              block(delta, 1, 1, t - 1, N_series), nu_trend[t]);
     } else {
       delta[t] = make_delta_t(alpha_ar, beta_ar_c, block(delta, t - ar, 1, ar, N_series), nu_trend[t]);
     }
   }
+
 
 
   // ----- SEASONALITY ------
@@ -174,12 +178,11 @@ transformed parameters {
   omega_star[1] = kappa_star[1]; 
   for (t in 2:(N_periods-1)) {
     omega[t] = (rho_cos_lambda .* omega[t - 1]) + (rho_sin_lambda .* omega_star[t-1]) + kappa[t];
-    # TODO: Confirm that the negative only applies to the first factor not both
     omega_star[t] = - (rho_sin_lambda .* omega[t - 1]) + (rho_cos_lambda .* omega_star[t-1]) + kappa_star[t];
   }
   
   // ----- UNIVARIATE GARCH ------
-  theta[1] = omega_garch; 
+  theta[1] = omega_garch;
   {
     matrix[N_periods-1, N_series] epsilon_squared = square(epsilon);
     
@@ -188,7 +191,10 @@ transformed parameters {
       row_vector[N_series]  q_component; 
       
       if (t <= p) {
-        p_component = columns_dot_product(block(beta_p_c, p - t + 2, 1, t - 1, N_series), block(theta, 1, 1, t - 1, N_series));
+        p_component = columns_dot_product(
+                                          constrain_stationary(block(beta_p, p - t + 2, 1, t - 1, N_series)),
+                                          block(theta, 1, 1, t - 1, N_series)
+                                          );
       } else {
         p_component = columns_dot_product(beta_p_c, block(theta, t - p, 1, p, N_series));
       }
@@ -221,12 +227,13 @@ model {
   
   // ----- PRIORS ------
   // TREND 
-  to_vector(delta_t0) ~ normal(0, inv_period_scale); 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
+  to_vector(delta_t0) ~ normal(alpha_ar, inv_period_scale); 
   // Jones (1984) Prior on the partial autocorrelations
-#  for (ss in 1:N_series) {
-#    .5 + (col(beta_ar, ss) / 2) ~ beta(beta_ar_alpha, beta_ar_beta); 
-#  }
+  // Sets a uniform prior on partial autocorrelations 
+  for (ss in 1:N_series) {
+    .5 + (col(beta_ar, ss) / 2) ~ beta(beta_ar_alpha, beta_ar_beta); 
+  }
   to_vector(beta_ar) ~ cauchy(0, 0.3); 
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
   L_omega_ar ~ lkj_corr_cholesky(corr_prior);
@@ -239,14 +246,14 @@ model {
   
   // CYCLICALITY
   (lambda / pi()) ~ beta(lambda_a, 2); 
-  rho ~ uniform(0, 1);
+  rho ~ normal(0, 1);
   theta_cycle ~ cauchy(0, inv_period_scale);
 
   // REGRESSION
   to_vector(beta_xi) ~ cauchy(0, inv_period_scale); 
 
   // INNOVATIONS
-  omega_garch ~ cauchy(0, inv_period_scale);
+  omega_garch ~ normal(0, inv_period_scale);
   to_vector(beta_p) ~ cauchy(0, .3);
   to_vector(beta_q) ~ cauchy(0, .3); 
   L_omega_garch ~ lkj_corr_cholesky(corr_prior);
@@ -254,13 +261,16 @@ model {
   // ----- TIME SERIES ------
   // Time series
   to_vector(starting_prices) ~ uniform(min_price, max_price); 
-  nu_trend ~ multi_normal_cholesky(zero_vector, L_Omega_ar);
+  nu_trend   ~ multi_normal_cholesky(zero_vector, L_Omega_ar);
   for (t in 1:(N_periods-1)) {
-    for (ss in 1:N_seasonality) w_t[ss, t+max_s] ~ normal(zero_vector, theta_season[ss]);
-    kappa[t] ~ normal(zero_vector, theta_cycle);
+    for (ss in 1:N_seasonality) w_t[ss][t] ~ normal(zero_vector, theta_season[ss]);
+    epsilon[t]    ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
+    kappa[t]      ~ normal(zero_vector, theta_cycle);
     kappa_star[t] ~ normal(zero_vector, theta_cycle);
-    epsilon[t] ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
   }
+  for (t in N_periods:(N_periods + max_s - 1)) {
+    for (ss in 1:N_seasonality) w_t[ss][t] ~ normal(zero_vector, theta_season[ss]);
+  } 
 
   // ----- OBSERVATIONS ------
   sigma_y ~ cauchy(0, 0.01);
@@ -269,7 +279,7 @@ model {
 
 generated quantities {
   matrix[periods_to_predict, N_series]             log_prices_hat; 
-  matrix[periods_to_predict, N_series]             delta_hat; // Trend at time t
+  matrix[periods_to_predict, N_series]             delta_hat; // Expected trend at time t
   matrix[periods_to_predict, N_series]             tau_hat_all;
   matrix[periods_to_predict, N_series]             omega_hat; // Cyclicality at time t
   matrix[periods_to_predict, N_series]             omega_star_hat; // Anti-cyclicality at time t
@@ -283,10 +293,10 @@ generated quantities {
   matrix[N_series, N_series]                       innovation_corr = crossprod(L_omega_garch);
   
   for (t in 1:periods_to_predict) {
-    nu_ar_hat[t] = multi_normal_cholesky_rng(to_vector(zero_vector), L_Omega_ar)';
-    kappa_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_cycle))';
-    kappa_star_hat[t] = multi_normal_rng(zero_vector', diag_matrix(theta_cycle))';
-    for (ss in 1:N_seasonality) w_t_hat[ss][t] = multi_normal_rng(zero_vector', diag_matrix(theta_season[ss]))';
+    nu_ar_hat[t] = multi_normal_cholesky_rng(zero_vector_r, L_Omega_ar)';
+    kappa_hat[t] = multi_normal_rng(zero_vector_r, diag_matrix(theta_cycle))';
+    kappa_star_hat[t] = multi_normal_rng(zero_vector_r, diag_matrix(theta_cycle))';
+    for (ss in 1:N_seasonality) w_t_hat[ss][t] = multi_normal_rng(zero_vector_r, diag_matrix(theta_season[ss]))';
   }
   
   // TREND
@@ -352,7 +362,7 @@ generated quantities {
       q_component = columns_dot_product(beta_q, square(block(epsilon_temp, t, 1, q, N_series)));
       
       theta_temp[t + p] = omega_garch + p_component + q_component;
-      epsilon_temp[t + q] = multi_normal_cholesky_rng(zero_vector', make_L(theta_temp[t + p], L_omega_garch))';
+      epsilon_temp[t + q] = multi_normal_cholesky_rng(zero_vector_r, make_L(theta_temp[t + p], L_omega_garch))';
     }
     
     theta_hat = block(theta_temp, p + 1, 1, periods_to_predict, N_series);

@@ -350,11 +350,66 @@ model <- stan_model("./mbsts.stan")
 init_f <- function(chain_id=1) {
   list(alpha_ar="0")
 }
-samples <- sampling(model, data=stan_data, chains=3, iter=2000, init=init_f, cores=4, save_warmup=FALSE
+samples <- sampling(model, data=stan_data, 
+                    chains=3, 
+                    #warmup=1000,
+                    #iter=3000, thin=3, init=init_f, 
+                    cores=5, save_warmup=FALSE,
+                    refresh=200,
                     ) %>% recover_types(price_set)
 ```
 
 # Inspect Model
+
+## Diagnostics
+
+```{r check_hmc}
+check_hmc_diagnostics(samples)
+```
+
+```{r energy}
+bayesplot::mcmc_nuts_energy(nuts_params(samples))
+```
+
+## Pairs
+
+```{r pairs}
+parameters <- samples %>% gather_draws(
+  alpha_ar[series], 
+  beta_ar[feature, series], 
+  delta_t0[feature, series], 
+  theta_ar[series], 
+  theta_season[series, seasonality], 
+  lambda[series], 
+  rho[series], 
+  theta_cycle[series], 
+  beta_xi[feature, series], 
+  omega_garch[series], 
+  beta_p[feature, series], 
+  beta_q[feature, series], 
+  starting_prices[series]
+)
+```
+
+```{r pairs,eval=F}
+series_to_show <- "series_1"
+
+parameters %>%
+  dplyr::filter(series == "series_1") %>% 
+  unite("variable", .variable, feature, seasonality) %>%
+  mutate(
+    variable = str_replace_all(variable, "_NA", "")
+  ) %>%
+  spread(key="variable", value=".value") %>% 
+  ungroup() %>% 
+  dplyr::select(-series, -.chain, -.iteration, -.draw) %>%
+  ggpairs(
+    upper=list(continuous="density"), 
+    lower=list(continuous="smooth_loess"), 
+    diag=list(continuous="densityDiag"), 
+    progress=FALSE
+  )
+```
 
 ## Prediction Accuracy
 
@@ -426,14 +481,15 @@ periodic_price_hat %>%
   ungroup() %>%
   mutate(.chain = as.character(.chain)) %>%
   bind_rows(prices_gathered %>% mutate(.chain="gen") %>% rename(y_hat=y), mean_periodic_price_hat) %>% 
-  mutate(alpha = case_when(
-      .chain %in% c("gen", "mean_hat") ~ .8, 
-      TRUE ~ .2
-    ), 
+  mutate(
+#    alpha = case_when(
+#      .chain %in% c("gen", "mean_hat") ~ .8, 
+#      TRUE ~ .2
+#    ), 
     .chain = fct_relevel(factor(.chain), c("gen", "mean_hat"))
   ) %>% 
-  ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain, alpha=I(alpha))) +
-  geom_line(size=0.5) +
+  ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain)) +
+  geom_line(size=0.3, alpha=0.6) +
   theme_minimal() +
   ggtitle("Reconstruction of Time Series By Chain")
 ```
@@ -453,27 +509,26 @@ true_future <- prices_gathered %>%
 price_forecast %>%
   dplyr::filter(is.finite(expm1(.value))) %>%
   ungroup() %>%
-  group_by(series, period) %>%
-  summarize(y = expm1(mean(.value))) %>%
-  mutate(chain = "mean_hat") %>%
-  bind_rows(true_future %>% dplyr::select(-id) %>% mutate(chain="gen")) %>%
-  ggplot(aes(x=period, y=y, color=series, linetype=chain)) +
+  group_by(series, period, .chain) %>%
+  summarize(y = expm1(mean(.value))) %>% 
+  #mutate(chain = "mean_hat") %>%
+  mutate(.chain = as.character(.chain)) %>%
+  bind_rows(true_future %>% dplyr::select(-id) %>% mutate(.chain="gen")) %>%
+  ggplot(aes(x=period, y=y, color=series, linetype=.chain)) +
   geom_line() + 
   geom_lineribbon(alpha=0.3, size=0.5, data=price_forecast %>% 
                     dplyr::filter(is.finite(.value)) %>%
-                    mutate(y=expm1(.value), chain="median") %>%
+                    mutate(y=expm1(.value), .chain="median") %>%
                     ungroup() %>%
-                    dplyr::select(series, period, y, chain) %>% 
-                    group_by(period, series, chain) %>% 
+                    dplyr::select(series, period, y, .chain) %>% 
+                    group_by(period, series, .chain) %>% 
                     median_qi(y, .width=c(0.05, 0.1, 0.2))
                     ) +
   scale_fill_brewer("Confidence", palette="Blues") +
   theme_minimal() +
-  scale_y_continuous(limits=c(0, 5500), oob=function(x, limits) case_when(
-    x > limits[2] ~ limits[2], 
-    x < limits[1] ~ limits[1], 
-    TRUE ~ x
-  )) + ggtitle("Forecasted Prices")
+  scale_y_log10() +
+  facet_grid(series ~ ., scales="free") +
+  ggtitle("Forecasted Prices")
 ```
 
 ### Combined
@@ -499,11 +554,6 @@ bind_rows(prices_gathered %>%
                   ) +
   geom_line(size=0.5, alpha=0.8) +
   scale_fill_brewer("Confidence", palette="Blues") +
-  scale_y_continuous(limits=c(0, 3500), oob=function(x, limits) case_when(
-    x > limits[2] ~ limits[2], 
-    x < limits[1] ~ limits[1], 
-    TRUE ~ x
-  )) +
   theme_minimal() +
   ggtitle("Reconstructed Time Series and Forecast vs. Actual", 
           subtitle=glue("AR=", stan_data$ar, ", P=", stan_data$p, ", Q=", stan_data$q))
@@ -512,6 +562,66 @@ bind_rows(prices_gathered %>%
 ## Components 
 
 ### Visualize All Components
+
+```{r component_view_functions}
+components_by_mean <- function(components) {
+  components %>%
+  ungroup() %>%
+  group_by(period, series, component) %>%
+  summarize(.value = mean(.value)) %>% 
+  mutate(.chain = "mean_hat") %>%
+  ggplot(aes(x = period, y = .value, color=component)) +
+  facet_grid(series ~ ., scales="free_y") +
+  geom_line(size=0.2) +
+  theme_minimal() +
+  ggtitle("Components of Price Movements (Means)")
+}
+
+components_by_chain <- function(components) {
+  components %>%
+    ungroup() %>%
+    group_by(period, series, component, .chain) %>%
+    summarize(.value = mean(.value)) %>%
+    mutate(.chain = as.character(.chain)) %>%
+    bind_rows(
+      components %>%
+        ungroup() %>%
+        group_by(period, series, component) %>%
+        summarize(.value = mean(.value)) %>% 
+        mutate(.chain = "mean_hat")
+    ) %>%
+    ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain))) +
+    facet_grid(series ~ ., scales="free_y") +
+    geom_line(size=0.2) +
+    theme_minimal() +
+    ggtitle("Components of Price Movements (By Chain)")
+}
+
+cumulative_components <- function(components) {
+  components %>%
+    ungroup() %>%
+    group_by(period, series, component, .chain) %>%
+    summarize(.value = mean(.value)) %>%
+    mutate(.chain = as.character(.chain)) %>%
+    bind_rows(
+      components %>%
+        ungroup() %>%
+        group_by(period, series, component) %>%
+        summarize(.value = mean(.value)) %>% 
+        mutate(.chain = "mean_hat")
+    ) %>%
+    group_by(component, .chain, series) %>%
+    arrange(period) %>%
+    mutate(.value = cumsum(.value)) %>% 
+    ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain))) +
+    facet_grid(series ~ ., scales="free_y") +
+    geom_line(size=0.2) +
+    #scale_x_continuous(limits=c(0, 80)) +
+    theme_minimal() +
+    ggtitle("Cumulative Components of Price Movements (By Chain)")
+}
+
+```
 
 ```{r recover_components}
 combined_components <- samples %>%  gather_draws(delta[period, series], tau_s[seasonality][period, series], omega[period, series], epsilon[period, series], xi[period, series])  %>% 
@@ -526,57 +636,46 @@ combined_components <- samples %>%  gather_draws(delta[period, series], tau_s[se
     )
   )
 
-components_mean <- combined_components %>%
-  ungroup() %>%
-  group_by(period, series, component) %>%
-  summarize(.value = mean(.value)) %>% 
-  mutate(.chain = "mean_hat")
-
-components_mean %>%
-  ggplot(aes(x = period, y = .value, color=component)) +
-  facet_grid(series ~ ., scales="free_y") +
-  geom_line(size=0.2) +
-  theme_minimal() +
-  ggtitle("Components of Price Movements (Means)")
+components_by_mean(combined_components)
 ```
 
 ```{r view_components_by_chain}
-components_by_chain <- combined_components %>%
-  ungroup() %>%
-  group_by(period, series, component, .chain) %>%
-  summarize(.value = mean(.value)) %>%
-  mutate(.chain = as.character(.chain))
-
-bind_rows(components_by_chain, components_mean) %>%
-  mutate(alpha = case_when(
-    .chain == "mean_hat" ~ 1, 
-    TRUE ~ 0.2
-  )) %>%
-  ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain), alpha=I(alpha))) +
-  facet_grid(series ~ ., scales="free_y") +
-  geom_line(size=0.2) +
-  theme_minimal() +
-  ggtitle("Components of Price Movements (By Chain)")
+components_by_chain(combined_components)
 ```
 
 ```{r components_cumulative}
-bind_rows(components_by_chain, components_mean) %>%
-  mutate(alpha = case_when(
-    .chain == "mean_hat" ~ 1, 
-    TRUE ~ 0.4
-  )) %>% 
-  group_by(component, .chain, series) %>%
-  arrange(period) %>%
-  mutate(.value = cumsum(.value)) %>% 
-  ggplot(aes(x = period, y = .value, color=component, linetype=factor(.chain), alpha=I(alpha))) +
-  facet_grid(series ~ ., scales="free_y") +
-  geom_line(size=0.2) +
-  #scale_x_continuous(limits=c(0, 80)) +
-  theme_minimal() +
-  ggtitle("Cumulative Components of Price Movements (By Chain)")
-
+cumulative_components(combined_components)
 ```
 
+## Forecast Components
+
+```{r recover_fcomponents}
+forecast_components <- samples %>%  gather_draws(delta_hat[period, series], tau_hat_all[period, series], omega_hat[period, series], epsilon_hat[period, series])  %>% 
+  ungroup() %>% 
+  mutate(
+    component = case_when(
+      .variable == "delta_hat" ~ "trends", 
+      .variable == "epsilon_hat" ~ "innovations", 
+      .variable == "tau_hat_all" ~ "seasonality",
+      .variable == "omega_hat" ~ "cyclicality", 
+      .variable == "xi_hat" ~ "predictors"
+    )
+  )
+
+components_by_mean(forecast_components)
+```
+
+
+```{r view_fcomponents_by_chain}
+components_by_chain(forecast_components)
+```
+
+
+```{r fcomponents_cumulative}
+cumulative_components(forecast_components)
+```
+
+## Components in Detail
 
 ### Cyclicality
 
@@ -691,6 +790,21 @@ volatilities_hat %>%
   facet_grid(component ~ series, scales="free_x") +
   theme_minimal() +
   ggtitle("Estimated Volatilities and Baselines")
+```
+
+
+## Further Inspection
+
+```{r shinystan}
+library(shinystan)
+ss_samples <- samples %>% as.shinystan() %>%
+  drop_parameters(pars=c("log_prices_hat", "delta_hat", "tau_hat_all", 
+                  "omega_hat", "omega_star_hat", "theta_hat", 
+                  "epsilon_hat", "nu_ar_hat", "kappa_hat", 
+                  "kappa_star_hat", "w_t_hat", 
+                  "log_prices", "delta", "tau_s", "tau", "omega", "omega_star", 
+                  "theta", "xi", 
+                  "nu_trend", "w_t", "kappa", "kappa_star", "epsilon"))
 ```
 
 

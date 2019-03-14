@@ -82,21 +82,6 @@ delta %>% data.frame() %>%
   ggtitle("Generated Trends")
 ```
 
-```{r cum_trends}
-delta %>% data.frame() %>%
-  set_colnames(paste("series", 1:params$S, sep="_")) %>%
-  mutate(period = 1:n()) %>%
-  gather(key="series", value="trend", -period) %>%
-  group_by(series) %>%
-  arrange(period) %>%
-  mutate(trend = exp(cumsum(trend))) %>% 
-  ggplot(aes(x = period, y=trend, color=series)) + 
-  geom_line(size=0.5, alpha=0.4) +
-  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
-  theme_minimal() + 
-  ggtitle("Generated Trends (Cumulative)")
-```
-
 ## Seasonality
 
 ```{r seasonality}
@@ -137,20 +122,6 @@ tau %>% data.frame() %>%
 
 ```
 
-```{r cum_seasonality}
-tau %>% data.frame() %>%
-  set_colnames(paste("series", 1:params$S, sep="_")) %>%
-  mutate(period = 1:n()) %>%
-  gather(key="series", value="seasonality", -period) %>%
-  group_by(series) %>%
-  arrange(period) %>%
-  mutate(seasonality = exp(cumsum(seasonality))) %>% 
-  ggplot(aes(x = period, y=seasonality, color=series)) + 
-  geom_line(size=0.5, alpha=0.4) +
-  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
-  theme_minimal() + 
-  ggtitle("Generated Seasonality (Cumulative)")
-```
 ## Cyclicality
 
 ```{r cyclicality}
@@ -189,22 +160,6 @@ omega %>% data.frame() %>%
   ggtitle("Generated Cyclicality")
 ```
 
-
-```{r cum_cyclicality}
-omega %>% data.frame() %>%
-  set_colnames(paste("series", 1:params$S, sep="_")) %>%
-  mutate(period = 1:n()) %>%
-  gather(key="series", value="cyclicality", -period) %>% 
-  group_by(series) %>%
-  arrange(period) %>%
-  mutate(cyclicality = exp(cumsum(cyclicality))) %>% 
-  ggplot(aes(x = period, y=cyclicality, color=series)) + 
-  geom_line(size=0.5, alpha=0.4) +
-  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
-  theme_minimal() + 
-  ggtitle("Generated Cyclicality (Cumulative)")
-
-```
 ## Innovations
 
 ```{r innovations}
@@ -229,19 +184,27 @@ epsilon %>% data.frame() %>%
   ggtitle("Generated Innovations")
 ```
 
-```{r cum_innovations}
-epsilon %>% data.frame() %>%
-  set_colnames(paste("series", 1:params$S, sep="_")) %>%
+## View Cumulatives
+
+```{r gen_cumulative}
+bind_rows(
+  data.frame(delta) %>% mutate(variable="delta"),
+  data.frame(tau) %>% mutate(variable="tau"),
+  data.frame(omega) %>% mutate(variable="omega"),
+  data.frame(epsilon) %>% mutate(variable="epsilon")
+) %>%
+  set_colnames(c(paste("series", 1:params$S, sep="_"), "variable")) %>%
+  group_by(variable) %>% 
   mutate(period = 1:n()) %>%
-  gather(key="series", value="innovation", -period) %>% 
-  group_by(series) %>%
+  gather(key="series", value="trend", -period, -variable) %>%
+  group_by(series, variable) %>%
   arrange(period) %>%
-  mutate(innovation = exp(cumsum(innovation))) %>% 
-  ggplot(aes(x = period, y=innovation, color=series)) + 
-  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
+  mutate(trend = exp(cumsum(trend))) %>% 
+  ggplot(aes(x = period, y=trend, color=series, linetype=variable)) + 
   geom_line(size=0.5, alpha=0.4) +
+  geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
   theme_minimal() + 
-  ggtitle("Generated Innovations (Cumulative)")
+  ggtitle("Generated Trends (Cumulative)")
 ```
 
 ## View Final Price Series

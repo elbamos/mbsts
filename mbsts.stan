@@ -33,7 +33,22 @@ functions {
     }
     return out';
   }
-
+  
+  // Jones (1984) prior on ar coefficients
+  // Sets a uniform prior on partial autocorrelations
+  real jonesprior_lpdf(matrix pacfs, vector beta_ar_alpha, vector beta_ar_beta) {
+    real tag = 0;
+    if (rows(pacfs) == 1) return 0; 
+    else {
+      matrix[rows(pacfs), cols(pacfs)] trans = (pacfs / 2.0) + 0.5; 
+      for (i in 1:cols(pacfs)) {
+        tag += beta_lpdf(col(trans, i) | beta_ar_alpha, beta_ar_beta);
+      }
+      // This isn't strictly necessary since its a constant...
+      tag += log(0.5) * num_elements(pacfs); 
+      return tag; 
+    }
+  }
 }
 
 data { 
@@ -72,6 +87,7 @@ transformed data {
   real                                min_beta_ar = ar == 1 ? 0 : -1;
   real                                lambda_mean = 2 / cyclicality_prior; 
   real                                lambda_a = -lambda_mean * 2 / (lambda_mean - 1); 
+  //real                                cyc_transform = log(1.0/pi()) * N_series; 
   int                                 max_s = max(s) - 1;
   // Priors for beta_ar partial autocorrelations
   vector<lower=0>[ar]                 beta_ar_alpha;
@@ -229,11 +245,7 @@ model {
   // TREND 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
   to_vector(delta_t0) ~ normal(alpha_ar, inv_period_scale); 
-  // Jones (1984) Prior on the partial autocorrelations
-  // Sets a uniform prior on partial autocorrelations 
-  for (ss in 1:N_series) {
-    .5 + (col(beta_ar, ss) / 2) ~ beta(beta_ar_alpha, beta_ar_beta); 
-  }
+  beta_ar ~ jonesprior(beta_ar_alpha, beta_ar_beta); 
   to_vector(beta_ar) ~ cauchy(0, 0.3); 
   to_vector(theta_ar) ~ cauchy(0, inv_period_scale); 
   L_omega_ar ~ lkj_corr_cholesky(corr_prior);
@@ -246,6 +258,8 @@ model {
   
   // CYCLICALITY
   (lambda / pi()) ~ beta(lambda_a, 2); 
+  // The log abs det of the transform above isn't necessary as its a constant
+  // target += cyc_transform; 
   rho ~ normal(0, 1);
   theta_cycle ~ cauchy(0, inv_period_scale);
 

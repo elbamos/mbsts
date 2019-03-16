@@ -5,19 +5,19 @@ date: "2/7/2019"
 output: html_document
 params:
   ####### Parameters on data generation
-  P: !r 50                  # Number of periods
+  P: !r 104                  # Number of periods
   use_sampled: F                  # Whether to use the exact prices generated or sample
   N: 700                          # Number of sampled prices if use_sampled = T
   S: 5                           # Number of price series
   F: 2                            # Number of features for regression
   ###### Parameters controlling the model 
-  periods_to_predict: 30
+  periods_to_predict: 12
   period_scale: 52                # Prior on the scale of price movements
   # a reasonable starting place is the number of periods over which 
   # its reasonably expected that a price may double; e.g., 52 for weekly prices
-  p: 3                            
-  q: 3
-  ar: 1                           # Number of periods for trend model
+  p: 1                            
+  q: 1
+  ar: 4                           # Number of periods for trend model
   s: !r c(4, 12)                  # Seasonality periods
   corr_prior: 4
   ###### Parameters controlling hierarchical shrinkage 
@@ -53,9 +53,10 @@ periods_to_generate <- params$P + params$periods_to_predict
 period_vline <- data.frame(xintercept=params$P)
 ```
 
-## Trends
+## Parameters 
 
-```{r trends}
+```{r params_for_gen}
+# Trends 
 theta_trend <- abs(rcauchy(params$S, 0, .01)) / params$period_scale
 omega_trend <- rlkjcorr(1, params$S, eta=params$corr_prior)
 alpha_trend <- rnorm(params$S, 0, .01) / params$period_scale
@@ -63,6 +64,25 @@ alpha_trend <- rnorm(params$S, 0, .01) / params$period_scale
 L_omega_trend <- t(chol(omega_trend))
 beta_trend <- abs(rcauchy(params$S, 0, scale=0.1))
 
+# Seasonality
+theta_season <- abs(rcauchy(params$S, scale=1)) / params$period_scale
+seasoning <- 500
+
+# Cyclicality
+lambda <- 2 * pi / runif(params$S, 500, 1000)
+rho <- runif(params$S, 0, 1)
+theta_cycle <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
+
+# Innovations
+theta_epsilon <- abs(rcauchy(params$S, 0, .05)) / params$period_scale
+omega_epsilon <- rlkjcorr(1, params$S, eta=params$corr_prior)
+beta_p <- abs(rnorm(params$S, sd=0.2))
+beta_q <- abs(rnorm(params$S, sd=0.2))
+```
+
+## Trends
+
+```{r trends}
 delta <- marima.sim(kvar=params$S,
                  ar.model=abind(diag(rep(1, params$S)), 
                                 diag(beta_trend), along=3),
@@ -85,8 +105,6 @@ delta %>% data.frame() %>%
 ## Seasonality
 
 ```{r seasonality}
-theta_season <- abs(rcauchy(params$S, scale=1)) / params$period_scale
-seasoning <- 500
 w <- matrix(rnorm(params$S * (periods_to_generate + seasoning), sd=theta_season^2), byrow=T, ncol=params$S)
 tau <- c(
   list(
@@ -125,9 +143,6 @@ tau %>% data.frame() %>%
 ## Cyclicality
 
 ```{r cyclicality}
-lambda <- 2 * pi / runif(params$S, 500, 1000)
-rho <- runif(params$S, 0, 1)
-theta_cycle <- abs(rcauchy(params$S, 0, .1)) / params$period_scale
 kappa <- matrix(rnorm(params$S * periods_to_generate, sd = theta_cycle), byrow = T, ncol=params$S)
 kappa_star <- matrix(rnorm(params$S * periods_to_generate, sd = theta_cycle), byrow = T, ncol=params$S)
 
@@ -163,13 +178,12 @@ omega %>% data.frame() %>%
 ## Innovations
 
 ```{r innovations}
-theta_epsilon <- abs(rcauchy(params$S, 0, .05)) / params$period_scale
-omega_epsilon <- rlkjcorr(1, params$S, eta=params$corr_prior)
-beta_p <- abs(rnorm(params$S, sd=0.2))
-beta_q <- abs(rnorm(params$S, sd=0.2))
-
-garchout <- eccc.sim(periods_to_generate, theta_epsilon, A=diag(beta_p), B=diag(beta_q), 
-                     R=omega_epsilon, model="diagonal")
+garchout <- eccc.sim(periods_to_generate, 
+                     theta_epsilon, 
+                     A=diag(beta_p), 
+                     B=diag(beta_q), 
+                     R=omega_epsilon, 
+                     model="diagonal")
 
 epsilon <- garchout$eps
 
@@ -204,7 +218,7 @@ bind_rows(
   geom_line(size=0.5, alpha=0.4) +
   geom_vline(data=period_vline, aes(xintercept=xintercept), color="red") +
   theme_minimal() + 
-  ggtitle("Generated Trends (Cumulative)")
+  ggtitle("Generated Cumulative Price Movements by Component")
 ```
 
 ## View Final Price Series
@@ -315,7 +329,7 @@ init_f <- function(chain_id=1) {
 }
 samples <- sampling(model, 
                     data=stan_data, 
-                    chains=3, 
+                    chains=2, 
                     #warmup=1000,
                     #iter=3000, thin=3, 
                     init=init_f, 
@@ -339,7 +353,7 @@ bayesplot::mcmc_nuts_energy(nuts_params(samples))
 
 ## Pairs
 
-```{r pairs}
+```{r pull_params}
 parameters <- samples %>% gather_draws(
   alpha_ar[series], 
   beta_ar[feature, series], 
@@ -505,7 +519,7 @@ prices_gathered %>%
   rename(y_hat=y) %>% 
   #dplyr::filter(.chain %in% c("forecast"))
   ggplot(aes(x = period, y = y_hat, color=series, linetype=.chain)) +
-  geom_lineribbon(alpha=0.2, size=0.1, data=price_forecast %>%
+  geom_lineribbon(alpha=0.2, size=0.2, data=price_forecast %>%
                   dplyr::filter(is.finite(.value)) %>%
                   ungroup() %>%
                   mutate(
@@ -750,8 +764,11 @@ coefficients_hat %>%
 
 ### Visualize Volatilities and Intercepts
 
-```{r visualize_volatilities}
-volatilities_hat <- samples %>% gather_draws(theta_ar[series], alpha_ar[series], theta_cycle[series], theta_season[seasonality][series], omega_garch[series]) %>%
+```{r visualize_volatilities} 
+volatilities_hat <- parameters %>%
+  dplyr::filter(
+    .variable %in% c("theta_ar", "alpah_ar", "theta_cycle", "theta_season", "omega_garch")
+  ) %>%
   ungroup() %>% 
   mutate(
     component = case_when(

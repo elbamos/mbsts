@@ -243,7 +243,7 @@ model {
   
   // ----- PRIORS ------
   // TREND 
-  to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
+  to_vector(alpha_ar) ~ student_t(1, 0, inv_period_scale); 
   to_vector(delta_t0) ~ normal(alpha_ar, inv_period_scale); 
   beta_ar ~ jonesprior(beta_ar_alpha, beta_ar_beta); 
   to_vector(beta_ar) ~ cauchy(0, 0.3); 
@@ -267,7 +267,7 @@ model {
   to_vector(beta_xi) ~ cauchy(0, inv_period_scale); 
 
   // INNOVATIONS
-  omega_garch ~ normal(0, inv_period_scale);
+  omega_garch ~ student_t(1, 0, inv_period_scale);
   to_vector(beta_p) ~ cauchy(0, .3);
   to_vector(beta_q) ~ cauchy(0, .3); 
   L_omega_garch ~ lkj_corr_cholesky(corr_prior);

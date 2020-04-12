@@ -3,3 +3,5 @@
 .RData
 .Ruserdata
 generate_files
+
+*.cpp

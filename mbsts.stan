@@ -37,7 +37,6 @@ functions {
 }
 
 data { 
-  int<lower=2> N; // Number of price points
   int<lower=2> N_series; // Number of price series
   int<lower=2> N_periods; // Number of periods
   int<lower=1> N_features; // Number of features in the regression
@@ -54,20 +53,16 @@ data {
   int<lower=0> corr_prior; 
   
   // Data 
-  vector<lower=0>[N]                         y;
-  int<lower=1,upper=N_periods>               period[N];
-  int<lower=1,upper=N_series>                series[N];
-  vector<lower=0>[N]                         weight;
+  matrix<lower=0>[N_periods, N_series]       y;
   matrix[N_periods, N_features]              x; // Regression predictors
 }
 
 transformed data {
-  vector<lower=0>[N]                  log_y;
+  matrix[N_periods, N_series]         log_y = log1p(y);
   real<lower=0>                       min_price =  log1p(min(y));
   real<lower=0>                       max_price = log1p(max(y));
   row_vector[N_series]                zero_vector = rep_row_vector(0, N_series);
   vector[N_series]                    zero_vector_r = zero_vector';
-  vector<lower=0>[N]                  inv_weights;
   real<lower=0>                       inv_period_scale = 1.0 / period_scale; 
   real                                min_beta_ar = ar == 1 ? 0 : -1;
   real                                lambda_mean = 2 / cyclicality_prior; 
@@ -80,17 +75,10 @@ transformed data {
     beta_ar_alpha[ar - a + 1] = floor((a + 1.0)/2.0); 
     beta_ar_beta[ar - a + 1] = floor(a / 2.0) + 1; 
   }
-  
-  for (n in 1:N) {
-    log_y[n] = log1p(y[n]);
-    inv_weights[n] = 1.0 / weight[n];
-  }
 }
 
 
 parameters {
-  real<lower=0>                                       sigma_y; // observation variance
-  
   // TREND delta_t
   matrix[1, N_series]                                 delta_t0; // Trend at time 0
   row_vector[N_series]                                alpha_ar; // long-term trend
@@ -115,7 +103,6 @@ parameters {
   matrix[N_features, N_series]                        beta_xi; // Coefficients of the regression parameters
   
   // INNOVATIONS
-  matrix[N_periods-1, N_series]                       epsilon; // Innovations
   row_vector<lower=0>[N_series]                       omega_garch; // Baseline volatility of innovations
   // Note that beta_p and q are converted to beta_p_c and q_c to enforce stationarity
   matrix<lower=0,upper=1>[p, N_series]                beta_p; // Univariate GARCH coefficients on prior volatility
@@ -126,7 +113,8 @@ parameters {
 }
 
 transformed parameters {
-  matrix[N_periods, N_series]                         log_prices; // Observable prices
+  matrix[N_periods-1, N_series]                       log_pre_innovation;
+  matrix[N_periods-1, N_series]                       epsilon; // Innovations
   matrix[N_periods-1, N_series]                       delta; // Trend at time t
   matrix[N_periods-1, N_series]                       tau_s[N_seasonality]; // Seasonality for each periodicity
   matrix[N_periods-1, N_series]                       tau; // Total seasonality
@@ -134,7 +122,6 @@ transformed parameters {
   matrix[N_periods-1, N_series]                       omega_star; // Anti-cyclicality at time t
   matrix[N_periods-1, N_series]                       theta; // Conditional variance of innovations 
   matrix[N_periods, N_series]                         xi = x * beta_xi; // Predictors
-  vector[N]                                           log_y_hat; 
   matrix[N_series, N_series]                          L_Omega_ar = make_L(theta_ar, L_omega_ar);
   row_vector[N_series] rho_cos_lambda = rho .* cos(lambda); 
   row_vector[N_series] rho_sin_lambda = rho .* sin(lambda); 
@@ -180,12 +167,20 @@ transformed parameters {
     omega[t] = (rho_cos_lambda .* omega[t - 1]) + (rho_sin_lambda .* omega_star[t-1]) + kappa[t];
     omega_star[t] = - (rho_sin_lambda .* omega[t - 1]) + (rho_cos_lambda .* omega_star[t-1]) + kappa_star[t];
   }
+
+  // ----- ASSEMBLE EXPECTED TIME SERIES ------
+  for (t in 2:N_periods) {
+    log_pre_innovation[t-1] = log_y[t-1] + delta[t-1] + tau[t-1] + omega[t-1] + xi[t-1];
+  }
   
-  // ----- UNIVARIATE GARCH ------
+  // CALCULATE INNOVATIONS
+  
+    // ----- UNIVARIATE GARCH ------
   theta[1] = omega_garch;
   {
     matrix[N_periods-1, N_series] epsilon_squared = square(epsilon);
-    
+    epsilon = log_pre_innovation - block(log_y, 2, 1, N_periods - 1, N_series);
+
     for (t in 2:(N_periods-1)) {
       row_vector[N_series]  p_component; 
       row_vector[N_series]  q_component; 
@@ -208,23 +203,10 @@ transformed parameters {
       theta[t] = omega_garch + p_component + q_component;
     }
   }
-
-  // ----- ASSEMBLE TIME SERIES ------
-
-  log_prices[1] = starting_prices; 
-  for (t in 2:N_periods) {
-    log_prices[t] = log_prices[t-1] + delta[t-1] + tau[t-1] + omega[t-1] + xi[t-1] + epsilon[t-1];
-  }
-  
-  for (n in 1:N) {
-    log_y_hat[n] = log_prices[period[n], series[n]];
-  }
 }
 
 
 model {
-  vector[N] price_error = log_y - log_y_hat;
-  
   // ----- PRIORS ------
   // TREND 
   to_vector(alpha_ar) ~ normal(0, inv_period_scale); 
@@ -264,17 +246,17 @@ model {
   nu_trend   ~ multi_normal_cholesky(zero_vector, L_Omega_ar);
   for (t in 1:(N_periods-1)) {
     for (ss in 1:N_seasonality) w_t[ss][t] ~ normal(zero_vector, theta_season[ss]);
-    epsilon[t]    ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
     kappa[t]      ~ normal(zero_vector, theta_cycle);
     kappa_star[t] ~ normal(zero_vector, theta_cycle);
   }
   for (t in N_periods:(N_periods + max_s - 1)) {
     for (ss in 1:N_seasonality) w_t[ss][t] ~ normal(zero_vector, theta_season[ss]);
   } 
-
-  // ----- OBSERVATIONS ------
-  sigma_y ~ cauchy(0, 0.01);
-  price_error ~ normal(0, inv_weights * sigma_y);
+  
+  // FIT TO OBSERVATIONS
+  for (t in 1:(N_periods - 1)) {
+    epsilon[t]    ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
+  }
 }
 
 generated quantities {
@@ -369,7 +351,7 @@ generated quantities {
     epsilon_hat = block(epsilon_temp, q + 1, 1, periods_to_predict, N_series); 
   }
   
-  log_prices_hat[1] = log_prices[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1] + epsilon_hat[1];
+  log_prices_hat[1] = log_y[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1] + epsilon_hat[1];
   for (t in 2:periods_to_predict) {
     log_prices_hat[t] = log_prices_hat[t-1] + delta_hat[t] + tau_hat_all[t] + omega_hat[t] + epsilon_hat[t];
   }

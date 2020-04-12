@@ -42,6 +42,7 @@ data {
   int<lower=1> N_features; // Number of features in the regression
   
   // Parameters controlling the model 
+  int<lower=0> condition;
   int<lower=2> periods_to_predict;
   int<lower=1> ar; // AR period for the trend
   int<lower=1> p; // GARCH
@@ -59,8 +60,6 @@ data {
 
 transformed data {
   matrix[N_periods, N_series]         log_y = log1p(y);
-  real<lower=0>                       min_price =  log1p(min(y));
-  real<lower=0>                       max_price = log1p(max(y));
   row_vector[N_series]                zero_vector = rep_row_vector(0, N_series);
   vector[N_series]                    zero_vector_r = zero_vector';
   real<lower=0>                       inv_period_scale = 1.0 / period_scale; 
@@ -108,8 +107,6 @@ parameters {
   matrix<lower=0,upper=1>[p, N_series]                beta_p; // Univariate GARCH coefficients on prior volatility
   matrix<lower=0,upper=1>[q, N_series]                beta_q; // Univariate GARCH coefficients on prior innovations
   cholesky_factor_corr[N_series]                      L_omega_garch; // Constant correlations among innovations 
-  
-  row_vector<lower=min_price,upper=max_price>[N_series] starting_prices;
 }
 
 transformed parameters {
@@ -178,8 +175,9 @@ transformed parameters {
     // ----- UNIVARIATE GARCH ------
   theta[1] = omega_garch;
   {
-    matrix[N_periods-1, N_series] epsilon_squared = square(epsilon);
-    epsilon = log_pre_innovation - block(log_y, 2, 1, N_periods - 1, N_series);
+    matrix[N_periods-1, N_series] epsilon_squared; 
+    epsilon = block(log_y, 2, 1, N_periods - 1, N_series) - log_pre_innovation;
+    epsilon_squared = square(epsilon);
 
     for (t in 2:(N_periods-1)) {
       row_vector[N_series]  p_component; 
@@ -242,7 +240,6 @@ model {
 
   // ----- TIME SERIES ------
   // Time series
-  to_vector(starting_prices) ~ uniform(min_price, max_price); 
   nu_trend   ~ multi_normal_cholesky(zero_vector, L_Omega_ar);
   for (t in 1:(N_periods-1)) {
     for (ss in 1:N_seasonality) w_t[ss][t] ~ normal(zero_vector, theta_season[ss]);
@@ -254,8 +251,10 @@ model {
   } 
   
   // FIT TO OBSERVATIONS
-  for (t in 1:(N_periods - 1)) {
-    epsilon[t]    ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
+  if (condition > 0) {
+    for (t in 1:(N_periods - 1)) {
+      epsilon[t]  ~ multi_normal_cholesky(zero_vector, make_L(theta[t], L_omega_garch));
+    }
   }
 }
 

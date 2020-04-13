@@ -33,7 +33,35 @@ functions {
     }
     return out';
   }
-
+  
+  // CYCLICALITY
+  
+  row_vector compute_omega(row_vector rho_cos_lambda, row_vector rho_sin_lambda, row_vector last_omega, row_vector last_omega_star, row_vector kappa) {
+    return (rho_cos_lambda .* last_omega) + (rho_sin_lambda .* last_omega_star) + kappa;
+  }
+  
+  row_vector compute_omega_star(row_vector rho_cos_lambda, row_vector rho_sin_lambda, row_vector last_omega, row_vector last_omega_star, row_vector kappa_star) {
+    return -(rho_sin_lambda .* last_omega) + (rho_cos_lambda .* last_omega_star) + kappa_star;
+  }
+  
+  matrix[] perform_cyclicality(int periods, 
+                               row_vector rho_cos_lambda, row_vector rho_sin_lambda, 
+                               matrix kappa, matrix kappa_star, 
+                               row_vector last_omega, row_vector last_omega_star) {
+      int n_series = cols(kappa); 
+      matrix[n_series, periods]  omega;
+      matrix[n_series, periods]  omega_star;
+      
+      omega[1] = compute_omega(rho_cos_lambda, rho_sin_lambda, last_omega, last_omega_star, kappa[1]);
+      omega_star[1] = compute_omega_star(rho_cos_lambda, rho_sin_lambda, last_omega, last_omega_star, kappa_star[1]);
+      
+      for (t in 2:periods) {
+        omega[t] = compute_omega(rho_cos_lambda, rho_sin_lambda, omega[t-1], omega_star[t-1], kappa[t-1]);
+        omega_star[t] = compute_omega_star(rho_cos_lambda, rho_sin_lambda, omega[t-1], omega_star[t-1], kappa_star[t-1]);
+      }
+      
+      return {omega, omega_star};
+   }
 }
 
 data { 
@@ -115,8 +143,7 @@ transformed parameters {
   matrix[N_periods-1, N_series]                       delta; // Trend at time t
   matrix[N_periods-1, N_series]                       tau_s[N_seasonality]; // Seasonality for each periodicity
   matrix[N_periods-1, N_series]                       tau; // Total seasonality
-  matrix[N_periods-1, N_series]                       omega; // Cyclicality at time t
-  matrix[N_periods-1, N_series]                       omega_star; // Anti-cyclicality at time t
+  matrix[N_periods-1, N_series]                       omega[2]; // Cyclicality and anti-cyclicality at time t
   matrix[N_periods-1, N_series]                       theta; // Conditional variance of innovations 
   matrix[N_periods, N_series]                         xi = x * beta_xi; // Predictors
   matrix[N_series, N_series]                          L_Omega_ar = make_L(theta_ar, L_omega_ar);
@@ -156,18 +183,13 @@ transformed parameters {
     else tau += tau_s[ss];
   }
 
-    
-  // ----- CYCLICALITY ------
-  omega[1] = kappa[1];
-  omega_star[1] = kappa_star[1]; 
-  for (t in 2:(N_periods-1)) {
-    omega[t] = (rho_cos_lambda .* omega[t - 1]) + (rho_sin_lambda .* omega_star[t-1]) + kappa[t];
-    omega_star[t] = - (rho_sin_lambda .* omega[t - 1]) + (rho_cos_lambda .* omega_star[t-1]) + kappa_star[t];
-  }
+  
+  omega = perform_cyclicality(N_periods - 1, rho_cos_lambda,  rho_sin_lambda, 
+                              kappa, kappa_star, rep_row_vector(0, N_series), rep_row_vector(0, N_series);
 
   // ----- ASSEMBLE EXPECTED TIME SERIES ------
   for (t in 2:N_periods) {
-    log_pre_innovation[t-1] = log_y[t-1] + delta[t-1] + tau[t-1] + omega[t-1] + xi[t-1];
+    log_pre_innovation[t-1] = log_y[t-1] + delta[t-1] + tau[t-1] + omega[1][t-1] + xi[t-1];
   }
   
   // CALCULATE INNOVATIONS
@@ -262,8 +284,7 @@ generated quantities {
   matrix[periods_to_predict, N_series]             log_prices_hat; 
   matrix[periods_to_predict, N_series]             delta_hat; // Expected trend at time t
   matrix[periods_to_predict, N_series]             tau_hat_all;
-  matrix[periods_to_predict, N_series]             omega_hat; // Cyclicality at time t
-  matrix[periods_to_predict, N_series]             omega_star_hat; // Anti-cyclicality at time t
+  matrix[periods_to_predict, N_series]             omega_hat[2]; // Cyclicality and anti-cyclicality at time t
   matrix[periods_to_predict, N_series]             theta_hat; // Conditional variance of innovations 
   matrix[periods_to_predict, N_series]             epsilon_hat; 
   matrix[periods_to_predict, N_series]             nu_ar_hat; 
@@ -313,16 +334,9 @@ generated quantities {
 
   
   // Cyclicality
-  for (t in 1:(periods_to_predict)) {
-    if (t == 1) {
-      omega_hat[t] = (rho_cos_lambda .* omega[N_periods-1]) + (rho_sin_lambda .* omega_star[N_periods-1]) + kappa_hat[t];
-      omega_star_hat[t] = -(rho_sin_lambda .* omega[N_periods-1]) + (rho_cos_lambda .* omega_star[N_periods-1]) + kappa_star_hat[t];
-    } else {
-      omega_hat[t] = (rho_cos_lambda .* omega_hat[t-1]) + (rho_sin_lambda .* omega_star_hat[t-1]) + kappa_hat[t];
-      omega_star_hat[t] = -(rho_sin_lambda .* omega_hat[t-1]) + (rho_cos_lambda .* omega_star_hat[t-1]) + kappa_star_hat[t];
-    }
-  }
-  
+  omega = perform_cyclicality(periods_to_predict, rho_cos_lambda, rho_sin_lambda, 
+                               kappa_hat, kappa_star_hat,
+                               omega[N_periods-1], omega_star[N_periods-1]);
   
   // Univariate GARCH
   {

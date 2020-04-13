@@ -39,13 +39,20 @@ functions {
     return -(rho_sin_lambda .* last_omega) + (rho_cos_lambda .* last_omega_star) + kappa_star;
   }
   
-  matrix[] perform_cyclicality(int periods, 
+  row_vector reconstruct_last_omega_star(matrix last_omegas, row_vector rho_sin_lambda, row_vector rho_cos_lambda,
+                                         row_vector last_kappa, row_vector last_kappa_star) {
+    int N_series = cols(rho_sin_lambda);
+    row_vector[N_series] omega_star_minus = (last_omegas[2] - last_kappa - (rho_cos_lambda .* last_omegas[1])) ./ rho_sin_lambda; 
+    return compute_omega_star(rho_cos_lambda, rho_sin_lambda, last_omegas[2], omega_star_minus, last_kappa_star);
+  }
+  
+  matrix   perform_cyclicality(int periods, 
                                row_vector rho_cos_lambda, row_vector rho_sin_lambda, 
                                row_vector[] kappa, row_vector[] kappa_star, 
                                row_vector last_omega, row_vector last_omega_star) {
       int n_series = cols(rho_cos_lambda); 
-      matrix[n_series, periods]  omega;
-      matrix[n_series, periods]  omega_star;
+      matrix[periods, n_series]  omega;
+      matrix[periods, n_series]  omega_star;
       
       omega[1] = compute_omega(rho_cos_lambda, rho_sin_lambda, last_omega, last_omega_star, kappa[1]);
       omega_star[1] = compute_omega_star(rho_cos_lambda, rho_sin_lambda, last_omega, last_omega_star, kappa_star[1]);

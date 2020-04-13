@@ -4,6 +4,7 @@ functions {
     return diag_pre_multiply(sqrt(theta), Omega);
   }
   
+  // ----- Stationarity ------
   // Enforce stationarity of lineartrend and GARCH
   row_vector pacf_to_acf(vector x) {
     int n = num_elements(x);
@@ -29,7 +30,7 @@ functions {
     return out';
   }
   
-  // CYCLICALITY
+  // ----- CYCLICALITY -----
   
   row_vector compute_omega(row_vector rho_cos_lambda, row_vector rho_sin_lambda, row_vector last_omega, row_vector last_omega_star, row_vector kappa) {
     return (rho_cos_lambda .* last_omega) + (rho_sin_lambda .* last_omega_star) + kappa;
@@ -62,10 +63,10 @@ functions {
         omega_star[t] = compute_omega_star(rho_cos_lambda, rho_sin_lambda, omega[t-1], omega_star[t-1], kappa_star[t-1]);
       }
       
-      return {omega, omega_star};
+      return omega;
    }
    
-   // TREND 
+   // ----- TREND -----
    
    // Linear Trend 
   row_vector make_delta_t(row_vector alpha_trend, matrix beta_trend, matrix delta_past, row_vector nu) {
@@ -97,6 +98,37 @@ functions {
     return delta; 
   }
  
+ 
+ // ----- SEASONALITY -----
+ 
+ matrix  initiate_seasonality(int periodicity, matrix w_t) {
+   int N_series = cols(w_t);
+   matrix[periodicity - 1, N_series]  tau;
+   
+   tau[1] = w_t[1];
+   for (t in 2:(periodicity - 1)) {
+     row_vector[N_series] tau_temp;
+     for (d in 1:N_series) tau_temp[d] = -sum(tau[1:(t-1), d]); 
+     tau[t] = tau_temp + w_t[t];
+   }
+   
+   return tau;
+ }
+
+ matrix perform_seasonality(int nominal_periodicity, int periods, matrix prior_tau, matrix w_t) {
+   int N_series = cols(w_t);
+   int periodicity = nominal_periodicity - 1;
+   matrix[periods + periodicity, N_series] tau = append_row(prior_tau, rep_matrix(0, periods, N_series));
+   
+   for (t in nominal_periodicity:periods) {
+     row_vector[N_series] tau_temp; 
+     for (d in 1:N_series) tau_temp[d] = -sum(tau[(t-periodicity):(t-1), d]); 
+     tau[t] = tau_temp + w_t[t];
+   }
+   
+   return block(tau, nominal_periodicity, 1, periods, N_series); 
+ }
+   
 }
 
 data { 
@@ -178,7 +210,7 @@ transformed parameters {
   matrix[N_periods-1, N_series]                       delta; // Trend at time t
   matrix[N_periods-1, N_series]                       tau_s[N_seasonality]; // Seasonality for each periodicity
   matrix[N_periods-1, N_series]                       tau; // Total seasonality
-  matrix[N_periods-1, N_series]                       omega[2]; // Cyclicality and anti-cyclicality at time t
+  matrix[N_periods-1, N_series]                       omega; // Cyclicality and anti-cyclicality at time t
   matrix[N_periods-1, N_series]                       theta; // Conditional variance of innovations 
   matrix[N_periods, N_series]                         xi = x * beta_xi; // Predictors
   matrix[N_series, N_series]                          L_Omega_ar = make_L(theta_ar, L_omega_ar);
@@ -196,27 +228,22 @@ transformed parameters {
 
   // ----- SEASONALITY ------
   for (ss in 1:N_seasonality) {
-    int periodicity = s[ss] - 1;
-    matrix[N_periods - 1 + periodicity, N_series]  tau_s_temp; 
-    tau_s_temp[1] = w_t[ss][1];
+    int periodicity = s[ss]; 
+    matrix[periodicity - 1, N_series] tau_start = initiate_seasonality(periodicity, w_t[ss]);
     
-    for (t in 2:(N_periods -1 + periodicity)) {
-      for (d in 1:N_series) tau_s_temp[t, d] = -sum(sub_col(tau_s_temp, max(1, t - periodicity), d, min(periodicity, t-1)));
-      tau_s_temp[t] += w_t[ss][t];
-    }
+    tau_s[ss] = perform_seasonality(periodicity, N_periods - 1, tau_start, w_t[ss][periodicity:]);
     
-    tau_s[ss] = block(tau_s_temp, periodicity + 1, 1, N_periods - 1, N_series); 
     if (ss == 1) tau = tau_s[ss];
-    else tau += tau_s[ss];
+    else tau += tau_s[ss];   
   }
-
-  
+ 
+  // ----- CYCLICALITY -------
   omega = perform_cyclicality(N_periods - 1, rho_cos_lambda,  rho_sin_lambda, 
                               kappa, kappa_star, rep_row_vector(0, N_series), rep_row_vector(0, N_series));
 
   // ----- ASSEMBLE EXPECTED TIME SERIES ------
   for (t in 2:N_periods) {
-    log_pre_innovation[t-1] = log_y[t-1] + delta[t-1] + tau[t-1] + omega[1][t-1] + xi[t-1];
+    log_pre_innovation[t-1] = log_y[t-1] + delta[t-1] + tau[t-1] + omega[t-1] + xi[t-1];
   }
   
   // CALCULATE INNOVATIONS
@@ -311,7 +338,7 @@ generated quantities {
   matrix[periods_to_predict, N_series]             log_prices_hat; 
   matrix[periods_to_predict, N_series]             delta_hat; // Expected trend at time t
   matrix[periods_to_predict, N_series]             tau_hat_all;
-  matrix[periods_to_predict, N_series]             omega_hat[2]; // Cyclicality and anti-cyclicality at time t
+  matrix[periods_to_predict, N_series]             omega_hat; // Cyclicality and anti-cyclicality at time t
   matrix[periods_to_predict, N_series]             theta_hat; // Conditional variance of innovations 
   matrix[periods_to_predict, N_series]             epsilon_hat; 
   row_vector[N_series]                             nu_ar_hat[periods_to_predict]; 
@@ -339,24 +366,26 @@ generated quantities {
   // SEASONALITY
   for (ss in 1:N_seasonality) {
     int periodicity = s[ss] - 1;
-    matrix[periodicity + periods_to_predict, N_series] tau_temp = append_row(
-      block(tau_s[ss], N_periods - periodicity, 1, periodicity, N_series), 
-      rep_matrix(0, periods_to_predict, N_series)
-    ); 
+    matrix[periodicity, N_series] tau_temp = block(tau_s[ss], N_periods - periodicity, 1, periodicity, N_series); 
+    matrix[periods_to_predict, N_series] tau_ss_hat = perform_seasonality(periodicity + 1, periods_to_predict, tau_temp, w_t_hat[ss]);
     
-    for (t in 1:(periods_to_predict)) {
-      for (d in 1:N_series) tau_temp[periodicity + t, d] = -sum(sub_col(tau_temp, t, d, periodicity));
-      tau_temp[periodicity + t] += w_t_hat[ss][t]; 
-    }  
-    if (ss == 1) tau_hat_all = block(tau_temp, periodicity + 1, 1, periods_to_predict, N_series);
-    else tau_hat_all += block(tau_temp, periodicity + 1, 1, periods_to_predict, N_series);
+    if (ss == 1) tau_hat_all = tau_ss_hat; 
+    else tau_hat_all += tau_ss_hat;
   }
 
   
   // Cyclicality
-  omega_hat = perform_cyclicality(periods_to_predict, rho_cos_lambda, rho_sin_lambda, 
-                               kappa_hat, kappa_star_hat,
-                               omega[1][N_periods-1], omega[2][N_periods-1]);
+  {
+    row_vector[N_series] last_omega_star = reconstruct_last_omega_star(
+      omega[(N_periods - 2):], rho_sin_lambda, rho_cos_lambda, 
+      kappa[N_periods - 1], kappa_star[N_periods - 1]
+    );
+                                         
+    omega_hat = perform_cyclicality(periods_to_predict, rho_cos_lambda, rho_sin_lambda, 
+                                    kappa_hat, kappa_star_hat,
+                                    omega[N_periods-1], last_omega_star);
+  }
+  
   
   // Univariate GARCH
   {
@@ -384,9 +413,9 @@ generated quantities {
     epsilon_hat = block(epsilon_temp, q + 1, 1, periods_to_predict, N_series); 
   }
   
-  log_prices_hat[1] = log_y[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1][1] + epsilon_hat[1];
+  log_prices_hat[1] = log_y[N_periods] + delta_hat[1] + tau_hat_all[1] + omega_hat[1] + epsilon_hat[1];
   for (t in 2:periods_to_predict) {
-    log_prices_hat[t] = log_prices_hat[t-1] + delta_hat[t] + tau_hat_all[t] + omega_hat[1][t] + epsilon_hat[t];
+    log_prices_hat[t] = log_prices_hat[t-1] + delta_hat[t] + tau_hat_all[t] + omega_hat[t] + epsilon_hat[t];
   }
 }
 
